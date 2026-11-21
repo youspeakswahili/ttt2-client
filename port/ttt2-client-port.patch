@@ -1,0 +1,711 @@
+diff --git a/port/src/runtime/audio_output.cpp b/port/src/runtime/audio_output.cpp
+index f863bb7..40ec209 100644
+--- a/port/src/runtime/audio_output.cpp
++++ b/port/src/runtime/audio_output.cpp
+@@ -314,7 +314,7 @@ private:
+         }
+         HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+         const char* operation = "CoInitializeEx";
+-        if (SUCCEEDED(hr)) { operation = "XAudio2Create"; hr = XAudio2Create(&audio_); }
++        if (SUCCEEDED(hr)) { operation = "XAudio2Create"; hr = XAudio2Create(&audio_, 0, XAUDIO2_DEFAULT_PROCESSOR); }
+         if (SUCCEEDED(hr))
+         {
+             audio_->RegisterForCallbacks(&engineEvents_);   // 0.1.8 TEST 17: OnCriticalError, logged by Run
+diff --git a/port/src/runtime/kernel/gpu_hw_d3d11.h b/port/src/runtime/kernel/gpu_hw_d3d11.h
+index e510ef4..9ef7911 100644
+--- a/port/src/runtime/kernel/gpu_hw_d3d11.h
++++ b/port/src/runtime/kernel/gpu_hw_d3d11.h
+@@ -516,7 +516,7 @@ inline D3D11_SAMPLER_DESC SamplerDesc(const uint32_t info[4], uint32_t mip = 0,
+                                          info[2] ? D3D11_FILTER_TYPE_LINEAR : D3D11_FILTER_TYPE_POINT,
+                                          mipMode == 1 || (userTrilinear && mipMode == 0 && maxLevel > 0 && minLinear)
+                                              ? D3D11_FILTER_TYPE_LINEAR : D3D11_FILTER_TYPE_POINT,
+-                                         D3D11_FILTER_REDUCTION_TYPE_STANDARD);
++                                         0 /* D3D11_FILTER_REDUCTION_TYPE_STANDARD */);
+     const uint32_t maxAniso = std::max<uint32_t>(aniso ? 1u << (aniso - 1) : 1u, userAniso);
+     if (maxAniso > 1 && maxLevel > 0 && minLinear) { s.Filter = D3D11_FILTER_ANISOTROPIC; s.MaxAnisotropy = std::min<uint32_t>(maxAniso, 16); }
+     s.AddressU = mode(info[0]); s.AddressV = mode(info[1]); s.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+diff --git a/port/src/runtime/kernel/matchmaking.cpp b/port/src/runtime/kernel/matchmaking.cpp
+index 9d7d09d..780c9c2 100644
+--- a/port/src/runtime/kernel/matchmaking.cpp
++++ b/port/src/runtime/kernel/matchmaking.cpp
+@@ -4,6 +4,7 @@
+ #include "matchmaking.h"
+ #include "community_net.h"
+ #include "net_transport.h"
++#include "net_ttt2.h"
+ #include "steam_net.h"
+ #include <algorithm>
+ #include <chrono>
+@@ -28,6 +29,7 @@ std::map<uint64_t, SessionRecord> g_seen;       // listed or invited sessions, f
+ bool g_heartbeat = false;
+ 
+ bool Steam() { return std::strcmp(net::BackendName(), "steam") == 0; }
++bool Ttt2() { return std::strcmp(net::BackendName(), "ttt2net") == 0; }
+ std::shared_ptr<community::Client> Server() { return net::Community(); }
+ 
+ std::filesystem::path Folder()
+@@ -150,6 +152,7 @@ void Publish(const SessionRecord& record)
+     g_owned[record.id] = record;
+     if (const std::shared_ptr<community::Client> server = Server()) server->PublishSession(Serialize(record));
+     else if (Steam()) steamnet::PublishLobby(record.id, Serialize(record));
++    else if (Ttt2()) net::ttt2::ShareSession(record.id, Serialize(record));
+     else
+     {
+         Write(record);
+@@ -165,6 +168,7 @@ void Remove(uint64_t id)
+     if (!g_owned.erase(id)) return;
+     if (const std::shared_ptr<community::Client> server = Server()) { server->RemoveSession(id); std::fprintf(stderr, "[mm] removed %016llX\n", (unsigned long long)id); return; }
+     if (Steam()) steamnet::RemoveLobby(id);
++    if (Ttt2()) { net::ttt2::UnshareSession(id); std::fprintf(stderr, "[mm] removed %016llX\n", (unsigned long long)id); return; }
+     std::error_code ec;
+     std::filesystem::remove(FileOf(id), ec);
+     std::fprintf(stderr, "[mm] removed %016llX\n", (unsigned long long)id);
+@@ -205,6 +209,20 @@ std::vector<SessionRecord> List(uint32_t max, const std::vector<std::pair<uint32
+         }
+         return out;
+     }
++    if (Ttt2())
++    {
++        // The only other player is the opponent the client paired this PC with.
++        std::vector<SessionRecord> out;
++        std::vector<uint8_t> bytes;
++        SessionRecord r;
++        if (max && net::ttt2::OpponentSession(bytes) && Deserialize(bytes, r))
++        {
++            std::lock_guard l(g_mutex);
++            g_seen[r.id] = r;
++            out.push_back(std::move(r));
++        }
++        return out;
++    }
+     std::vector<std::pair<std::filesystem::file_time_type, SessionRecord>> found;
+     std::error_code ec;
+     for (const auto& entry : std::filesystem::directory_iterator(Folder(), ec))
+@@ -236,6 +254,11 @@ bool Find(uint64_t id, SessionRecord& out)
+         return true;
+     }
+     if (Steam()) return false;
++    if (Ttt2())
++    {
++        std::vector<uint8_t> bytes;
++        return net::ttt2::OpponentSession(bytes) && Deserialize(bytes, out) && out.id == id;
++    }
+     const std::filesystem::path file = FileOf(id);
+     return Fresh(file) && Load(file, out);
+ }
+@@ -248,6 +271,10 @@ bool TakeInvite(SessionRecord& out)
+         uint64_t from = 0;
+         if (!server->TakeInvite(bytes, from) || !Deserialize(bytes, out)) return false;
+     }
++    else if (Ttt2())
++    {
++        if (!net::ttt2::TakeInvite(bytes) || !Deserialize(bytes, out)) return false;
++    }
+     else if (!steamnet::TakeJoinRequest(bytes) || !Deserialize(bytes, out)) return false;
+     std::lock_guard l(g_mutex);
+     g_seen[out.id] = out;
+diff --git a/port/src/runtime/kernel/net_transport.cpp b/port/src/runtime/kernel/net_transport.cpp
+index a72b2c7..5bec5a1 100644
+--- a/port/src/runtime/kernel/net_transport.cpp
++++ b/port/src/runtime/kernel/net_transport.cpp
+@@ -9,6 +9,7 @@
+ #include <mstcpip.h>
+ #include <windows.h>
+ #include "net_transport.h"
++#include "net_ttt2.h"
+ #include "community_net.h"
+ #include "profiles.h"
+ #include "steam_net.h"
+@@ -48,6 +49,7 @@ std::atomic<uint64_t> g_local{ 0 };
+ SOCKET g_socket = INVALID_SOCKET;
+ Receiver g_receiver = nullptr;
+ bool g_steam = false;
++bool g_ttt2 = false;                                        // TTT2_NET=ttt2net: the TTT2 Client's match (net_ttt2.cpp)
+ // The community server players find each other on (sessions, invites, GIN); matches still run over this
+ // transport (Steam P2P). std::atomic_load / _store: matchmaking reads it from the game's threads.
+ std::shared_ptr<community::Client> g_server;
+@@ -189,6 +191,11 @@ void Deliver(uint64_t peer, Channel channel, const uint8_t* data, size_t size)
+     }
+ }
+ 
++void FromTtt2(uint64_t peer, bool reliable, const uint8_t* data, size_t size)
++{
++    Deliver(peer, reliable ? Channel::Reliable : Channel::Unreliable, data, size);
++}
++
+ void FromSteam(uint64_t peer, bool reliable, const uint8_t* data, size_t size)
+ {
+     Deliver(peer, reliable ? Channel::Reliable : Channel::Unreliable, data, size);
+@@ -429,6 +436,16 @@ bool Start(Receiver receiver)
+     std::lock_guard l(g_mutex);
+     if (g_started) return true;
+     const char* choice = std::getenv("TTT2_NET");
++    if (choice && std::strcmp(choice, "ttt2net") == 0)
++    {
++        uint64_t local = 0;
++        g_receiver = receiver;
++        if (!ttt2::Start(FromTtt2, local)) return false;
++        g_ttt2 = true;
++        g_local = local;
++        g_started = true;
++        return true;
++    }
+     const bool wantLoopback = choice && std::strcmp(choice, "loopback") == 0;
+     const bool needSteam = choice && std::strcmp(choice, "steam") == 0;
+     if (!wantLoopback)
+@@ -477,10 +494,11 @@ bool Start(Receiver receiver)
+ }
+ 
+ uint64_t LocalPeer() { return g_local.load(); }
+-const char* BackendName() { return g_serverActive.load() ? "server" : g_steam ? "steam" : "loopback"; }
++const char* BackendName() { return g_serverActive.load() ? "server" : g_ttt2 ? "ttt2net" : g_steam ? "steam" : "loopback"; }
+ 
+ bool Send(uint64_t peer, Channel channel, const void* data, size_t size)
+ {
++    if (g_ttt2) return ttt2::Send(peer, channel == Channel::Reliable, data, size);
+     if (g_steam) return steamnet::Send(peer, channel == Channel::Reliable, data, size);
+     if (!g_started || (peer & 0xFFFFFFFF00000000ull) != kLoopTag || size + 1 > 65507) return false;
+     sockaddr_in to{};
+diff --git a/port/src/runtime/kernel/net_ttt2.cpp b/port/src/runtime/kernel/net_ttt2.cpp
+new file mode 100644
+index 0000000..b8f1d87
+--- /dev/null
++++ b/port/src/runtime/kernel/net_ttt2.cpp
+@@ -0,0 +1,492 @@
++// The TTT2 Client's match transport (net_ttt2.h).
++//
++// Wire format (every packet; through the relay it is wrapped: out 0x03 + token(16) + packet, in 0x04 + packet):
++//   0xEE keepalive   [0xEE][match id 8][slot 1]                       both paths, keeps NATs and the relay open
++//   0xEC ack         [0xEC][next u32][have u32]                       next reliable seq expected; bit i of `have`:
++//                                                                     seq next+1+i already arrived
++//   0xE0 data        [0xE0][flags 1][seq u32][msg u32][idx u16][count u16][kind 1][payload <= kChunk]
++//                    flags bit0: reliable (seq counts reliable fragments, in order); msg numbers messages, idx/count
++//                    their fragments. kind: 0 the game's packet, 1 a session record (id u64 + record), 2 a session
++//                    removed (id u64).
++// Little endian throughout.
++#define WIN32_LEAN_AND_MEAN
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#include <windows.h>
++#include "net_ttt2.h"
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <deque>
++#include <fstream>
++#include <map>
++#include <mutex>
++#include <string>
++#include <thread>
++
++#ifndef SIO_UDP_CONNRESET
++#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
++#endif
++
++namespace net::ttt2 {
++namespace {
++
++using Clock = std::chrono::steady_clock;
++constexpr uint64_t kTag = 0x5454324E00000000ull;          // "TT2N"
++constexpr uint8_t kKeepalive = 0xEE, kAck = 0xEC, kData = 0xE0;
++constexpr uint8_t kRelayOut = 0x03, kRelayIn = 0x04;
++constexpr size_t kChunk = 1100, kHeader = 15;
++constexpr uint32_t kWindow = 512;                          // reliable fragments in flight
++constexpr uint8_t kKindGame = 0, kKindSession = 1, kKindUnshare = 2;
++constexpr auto kDirectLost = std::chrono::milliseconds(2500);
++constexpr auto kDirectEvery = std::chrono::milliseconds(200), kRelayEvery = std::chrono::milliseconds(1000);
++constexpr auto kInviteAgain = std::chrono::seconds(15);
++
++struct MatchFile
++{
++    uint8_t id[8] = {};
++    int slot = 0;
++    sockaddr_in peer{}, relay{};
++    uint8_t token[16] = {};
++    uint16_t localPort = 0;
++    bool direct = false;
++};
++
++struct Outgoing { std::vector<uint8_t> packet; Clock::time_point sent; int sends = 0; };
++struct Partial { uint16_t count = 0, got = 0; uint8_t kind = 0; std::vector<std::vector<uint8_t>> parts; Clock::time_point first; };
++
++std::mutex g_m;
++MatchFile g_match;
++SOCKET g_sock = INVALID_SOCKET;
++Deliver g_deliver = nullptr;
++std::atomic<bool> g_on{ false };
++Clock::time_point g_start, g_lastDirectRx{}, g_lastRelayRx{}, g_lastDirectKa{}, g_lastRelayKa{}, g_lastGame{};
++bool g_heardDirect = false, g_loggedPath = false, g_usingDirect = false;
++bool g_noDirect = false;                                    // TTT2_NET_NODIRECT=1 (tests): the relay only
++// reliable send
++uint32_t g_sendSeq = 0, g_ackedTo = 0, g_msg = 0;
++std::map<uint32_t, Outgoing> g_unacked;                     // seq -> packet
++std::deque<std::vector<uint8_t>> g_waiting;                 // beyond the window
++double g_srtt = 0;
++// reliable receive
++uint32_t g_recvNext = 0;
++std::map<uint32_t, std::vector<uint8_t>> g_ahead;           // seq -> whole packet
++std::vector<uint8_t> g_relMsg;                              // the reliable message being put together
++uint8_t g_relKind = 0;
++bool g_ackDue = false;
++// unreliable receive
++std::map<uint32_t, Partial> g_partials;
++// sessions
++std::map<uint64_t, std::vector<uint8_t>> g_mine, g_theirs;
++uint64_t g_offered = 0;
++Clock::time_point g_offeredAt{};
++
++void Put16(uint8_t* p, uint16_t v) { p[0] = uint8_t(v); p[1] = uint8_t(v >> 8); }
++void Put32(uint8_t* p, uint32_t v) { for (int i = 0; i < 4; ++i) p[i] = uint8_t(v >> (8 * i)); }
++void Put64(uint8_t* p, uint64_t v) { Put32(p, uint32_t(v)); Put32(p + 4, uint32_t(v >> 32)); }
++uint16_t Get16(const uint8_t* p) { return uint16_t(p[0] | p[1] << 8); }
++uint32_t Get32(const uint8_t* p) { return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24; }
++uint64_t Get64(const uint8_t* p) { return uint64_t(Get32(p)) | uint64_t(Get32(p + 4)) << 32; }
++
++bool Hex(const std::string& s, uint8_t* out, size_t n)
++{
++    if (s.size() != n * 2) return false;
++    for (size_t i = 0; i < n; ++i)
++    {
++        unsigned v = 0;
++        if (std::sscanf(s.c_str() + i * 2, "%2x", &v) != 1) return false;
++        out[i] = uint8_t(v);
++    }
++    return true;
++}
++bool Addr(const std::string& s, sockaddr_in& a)
++{
++    const size_t c = s.rfind(':');
++    if (c == std::string::npos) return false;
++    a = {};
++    a.sin_family = AF_INET;
++    const int port = std::atoi(s.c_str() + c + 1);
++    if (port <= 0 || port > 65535 || inet_pton(AF_INET, s.substr(0, c).c_str(), &a.sin_addr) != 1) return false;
++    a.sin_port = htons(uint16_t(port));
++    return true;
++}
++bool Same(const sockaddr_in& a, const sockaddr_in& b) { return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port; }
++std::string Show(const sockaddr_in& a)
++{
++    char ip[32] = {};
++    inet_ntop(AF_INET, &a.sin_addr, ip, sizeof ip);
++    return std::string(ip) + ":" + std::to_string(ntohs(a.sin_port));
++}
++
++bool ReadMatch(const char* path, MatchFile& m)
++{
++    std::ifstream in(path);
++    if (!in) return false;
++    std::map<std::string, std::string> kv;
++    for (std::string line; std::getline(in, line);)
++    {
++        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
++        const size_t eq = line.find('=');
++        if (eq != std::string::npos) kv[line.substr(0, eq)] = line.substr(eq + 1);
++    }
++    m.slot = std::atoi(kv["slot"].c_str());
++    m.localPort = uint16_t(std::atoi(kv["localport"].c_str()));
++    m.direct = kv["direct"] == "1";
++    const bool peerOk = Addr(kv["peer"], m.peer);
++    return Hex(kv["id"], m.id, 8) && (m.slot == 0 || m.slot == 1) && Addr(kv["relay"], m.relay) && Hex(kv["token"], m.token, 16) &&
++           (peerOk || !m.direct);
++}
++
++// g_m held. Over the direct path while the opponent is heard there, else the relay.
++void Transmit(const uint8_t* p, size_t n)
++{
++    const auto now = Clock::now();
++    const bool direct = !g_noDirect && g_match.peer.sin_port && (g_heardDirect ? now - g_lastDirectRx < kDirectLost : g_match.direct && now - g_start < kDirectLost);
++    if (direct != g_usingDirect || !g_loggedPath)
++    {
++        g_usingDirect = direct;
++        g_loggedPath = true;
++        std::fprintf(stderr, "[ttt2net] sending %s\n", direct ? ("directly to " + Show(g_match.peer)).c_str() : "through the relay");
++    }
++    if (direct)
++    {
++        sendto(g_sock, reinterpret_cast<const char*>(p), int(n), 0, reinterpret_cast<const sockaddr*>(&g_match.peer), sizeof g_match.peer);
++        return;
++    }
++    uint8_t buf[1 + 16 + kHeader + kChunk];
++    if (n > kHeader + kChunk) return;
++    buf[0] = kRelayOut;
++    std::memcpy(buf + 1, g_match.token, 16);
++    std::memcpy(buf + 17, p, n);
++    sendto(g_sock, reinterpret_cast<const char*>(buf), int(17 + n), 0, reinterpret_cast<const sockaddr*>(&g_match.relay), sizeof g_match.relay);
++}
++
++void Keepalive(bool relay)
++{
++    uint8_t ka[10] = { kKeepalive };
++    std::memcpy(ka + 1, g_match.id, 8);
++    ka[9] = uint8_t(g_match.slot);
++    if (!relay)
++    {
++        if (g_match.peer.sin_port && !g_noDirect)
++            sendto(g_sock, reinterpret_cast<const char*>(ka), sizeof ka, 0, reinterpret_cast<const sockaddr*>(&g_match.peer), sizeof g_match.peer);
++        return;
++    }
++    uint8_t buf[17 + sizeof ka] = { kRelayOut };
++    std::memcpy(buf + 1, g_match.token, 16);
++    std::memcpy(buf + 17, ka, sizeof ka);
++    sendto(g_sock, reinterpret_cast<const char*>(buf), sizeof buf, 0, reinterpret_cast<const sockaddr*>(&g_match.relay), sizeof g_match.relay);
++}
++
++void SendAck()
++{
++    uint8_t a[9] = { kAck };
++    Put32(a + 1, g_recvNext);
++    uint32_t have = 0;
++    for (const auto& [seq, p] : g_ahead)
++        if (seq - g_recvNext - 1 < 32) have |= 1u << (seq - g_recvNext - 1);
++    Put32(a + 5, have);
++    Transmit(a, sizeof a);
++    g_ackDue = false;
++}
++
++// g_m held: queue one message as fragments.
++void Queue(bool reliable, uint8_t kind, const uint8_t* data, size_t size)
++{
++    const uint32_t msg = g_msg++;
++    const size_t count = (std::max<size_t>)(1, (size + kChunk - 1) / kChunk);
++    if (count > 0xFFFF) return;
++    for (size_t i = 0; i < count; ++i)
++    {
++        const size_t at = i * kChunk, n = (std::min)(kChunk, size - at);
++        std::vector<uint8_t> p(kHeader + n);
++        p[0] = kData;
++        p[1] = reliable ? 1 : 0;
++        Put32(&p[2], reliable ? g_sendSeq++ : 0);
++        Put32(&p[6], msg);
++        Put16(&p[10], uint16_t(i));
++        Put16(&p[12], uint16_t(count));
++        p[14] = kind;
++        if (n) std::memcpy(&p[kHeader], data + at, n);
++        if (!reliable) { Transmit(p.data(), p.size()); continue; }
++        if (g_unacked.size() < kWindow)
++        {
++            Transmit(p.data(), p.size());
++            const uint32_t seq = Get32(&p[2]);   // before p is moved away
++            g_unacked[seq] = { std::move(p), Clock::now(), 1 };
++        }
++        else g_waiting.push_back(std::move(p));
++    }
++}
++
++void FillWindow()
++{
++    while (!g_waiting.empty() && g_unacked.size() < kWindow)
++    {
++        std::vector<uint8_t> p = std::move(g_waiting.front());
++        g_waiting.pop_front();
++        Transmit(p.data(), p.size());
++        const uint32_t seq = Get32(&p[2]);   // before p is moved away
++        g_unacked[seq] = { std::move(p), Clock::now(), 1 };
++    }
++}
++
++struct Ready { uint8_t kind; bool reliable; std::vector<uint8_t> bytes; };
++
++// g_m held: a whole message arrived.
++void Message(uint8_t kind, bool reliable, std::vector<uint8_t> bytes, std::vector<Ready>& out)
++{
++    if (kind == kKindGame) { g_lastGame = Clock::now(); out.push_back({ kind, reliable, std::move(bytes) }); return; }
++    if (bytes.size() < 8) return;
++    const uint64_t id = Get64(bytes.data());
++    if (kind == kKindSession)
++    {
++        const bool fresh = !g_theirs.count(id);
++        g_theirs[id].assign(bytes.begin() + 8, bytes.end());
++        if (fresh) std::fprintf(stderr, "[ttt2net] the opponent's session %016llX\n", (unsigned long long)id);
++    }
++    else if (kind == kKindUnshare)
++    {
++        g_theirs.erase(id);
++        if (g_offered == id) g_offered = 0;
++    }
++}
++
++void OnData(const uint8_t* p, size_t n, std::vector<Ready>& out)
++{
++    if (n < kHeader) return;
++    const bool reliable = p[1] & 1;
++    const uint32_t seq = Get32(p + 2), msg = Get32(p + 6);
++    const uint16_t idx = Get16(p + 10), count = Get16(p + 12);
++    const uint8_t kind = p[14];
++    if (!count || idx >= count) return;
++    if (!reliable)
++    {
++        if (count == 1) { Message(kind, false, std::vector<uint8_t>(p + kHeader, p + n), out); return; }
++        Partial& part = g_partials[msg];
++        if (!part.count) { part.count = count; part.kind = kind; part.parts.resize(count); part.first = Clock::now(); }
++        if (part.count != count || !part.parts[idx].empty() || n == kHeader) return;
++        part.parts[idx].assign(p + kHeader, p + n);
++        if (++part.got == count)
++        {
++            std::vector<uint8_t> whole;
++            for (auto& x : part.parts) whole.insert(whole.end(), x.begin(), x.end());
++            g_partials.erase(msg);
++            Message(kind, false, std::move(whole), out);
++        }
++        while (g_partials.size() > 32) g_partials.erase(g_partials.begin());
++        return;
++    }
++    g_ackDue = true;
++    if (seq - g_recvNext >= 0x80000000u) return;             // already had it (the ack goes out again)
++    if (seq - g_recvNext >= 4096) return;                    // too far ahead
++    if (seq != g_recvNext) { g_ahead.emplace(seq, std::vector<uint8_t>(p, p + n)); return; }
++    std::vector<uint8_t> cur(p, p + n);
++    for (;;)
++    {
++        const uint16_t i = Get16(&cur[10]), c = Get16(&cur[12]);
++        if (i == 0) { g_relMsg.clear(); g_relKind = cur[14]; }
++        g_relMsg.insert(g_relMsg.end(), cur.begin() + kHeader, cur.end());
++        if (i + 1 == c) { Message(g_relKind, true, std::move(g_relMsg), out); g_relMsg.clear(); }
++        ++g_recvNext;
++        const auto it = g_ahead.find(g_recvNext);
++        if (it == g_ahead.end()) break;
++        cur = std::move(it->second);
++        g_ahead.erase(it);
++    }
++}
++
++void OnAck(const uint8_t* p, size_t n)
++{
++    if (n < 9) return;
++    const uint32_t next = Get32(p + 1), have = Get32(p + 5);
++    const auto now = Clock::now();
++    for (auto it = g_unacked.begin(); it != g_unacked.end();)
++    {
++        const uint32_t d = next - it->first;                 // > 0 (and small): below next
++        const bool below = d != 0 && d < 0x80000000u;
++        const uint32_t above = it->first - next - 1;
++        if (below || (above < 32 && (have >> above) & 1))
++        {
++            if (it->second.sends == 1)
++            {
++                const double ms = std::chrono::duration<double, std::milli>(now - it->second.sent).count();
++                g_srtt = g_srtt == 0 ? ms : g_srtt * 0.875 + ms * 0.125;
++            }
++            it = g_unacked.erase(it);
++        }
++        else ++it;
++    }
++    FillWindow();
++}
++
++void Loop()
++{
++    std::vector<uint8_t> buf(2048);
++    for (;;)
++    {
++        sockaddr_in from{};
++        int fromLen = sizeof from;
++        const int got = recvfrom(g_sock, reinterpret_cast<char*>(buf.data()), int(buf.size()), 0, reinterpret_cast<sockaddr*>(&from), &fromLen);
++        std::vector<Ready> ready;
++        {
++            std::lock_guard l(g_m);
++            const auto now = Clock::now();
++            if (got > 0)
++            {
++                const uint8_t* p = buf.data();
++                size_t n = size_t(got);
++                bool viaRelay = false, ok = false;
++                if (Same(from, g_match.relay))
++                {
++                    if (p[0] == kRelayIn && n > 1) { ++p; --n; viaRelay = true; ok = true; }
++                }
++                else if (g_noDirect) ok = false;
++                else if (g_match.peer.sin_port && Same(from, g_match.peer)) ok = true;
++                else if (n == 10 && p[0] == kKeepalive && std::memcmp(p + 1, g_match.id, 8) == 0 && p[9] != g_match.slot)
++                {
++                    std::fprintf(stderr, "[ttt2net] the opponent is at %s now\n", Show(from).c_str());
++                    g_match.peer = from;                     // its NAT gave it another port
++                    ok = true;
++                }
++                if (ok)
++                {
++                    if (viaRelay) g_lastRelayRx = now;
++                    else
++                    {
++                        if (!g_heardDirect) std::fprintf(stderr, "[ttt2net] heard the opponent directly\n");
++                        g_heardDirect = true;
++                        g_lastDirectRx = now;
++                    }
++                    if (p[0] == kData) OnData(p, n, ready);
++                    else if (p[0] == kAck) OnAck(p, n);
++                }
++            }
++            // timers
++            if (now - g_lastDirectKa >= kDirectEvery) { g_lastDirectKa = now; Keepalive(false); }
++            if (now - g_lastRelayKa >= kRelayEvery) { g_lastRelayKa = now; Keepalive(true); }
++            const auto rto = std::chrono::milliseconds(std::clamp(int(g_srtt * 2 + 30), 60, 1000));
++            for (auto& [seq, o] : g_unacked)
++                if (now - o.sent >= rto * (std::min)(o.sends, 4))
++                {
++                    Transmit(o.packet.data(), o.packet.size());
++                    o.sent = now;
++                    ++o.sends;
++                }
++            if (g_ackDue) SendAck();
++        }
++        for (Ready& r : ready)
++            if (g_deliver) g_deliver(kTag | uint64_t(2 - g_match.slot), r.reliable, r.bytes.data(), r.bytes.size());
++    }
++}
++
++} // namespace
++
++bool Start(Deliver deliver, uint64_t& local)
++{
++    const char* path = std::getenv("TTT2_MATCH");
++    if (!path || !*path) { std::fprintf(stderr, "[ttt2net] TTT2_MATCH is not set: start the game from the TTT2 Client\n"); return false; }
++    MatchFile m;
++    if (!ReadMatch(path, m)) { std::fprintf(stderr, "[ttt2net] could not read the match file %s\n", path); return false; }
++    WSADATA wsa;
++    if (WSAStartup(MAKEWORD(2, 2), &wsa)) return false;
++    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++    if (s == INVALID_SOCKET) return false;
++    int big = 4 << 20;
++    setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&big), sizeof big);
++    setsockopt(s, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&big), sizeof big);
++    BOOL off = FALSE;
++    DWORD ignored = 0;
++    WSAIoctl(s, SIO_UDP_CONNRESET, &off, sizeof off, nullptr, 0, &ignored, nullptr, nullptr);
++    DWORD timeout = 5;                                        // the loop's timers tick at least this often
++    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof timeout);
++    sockaddr_in a{};
++    a.sin_family = AF_INET;
++    a.sin_port = htons(m.localPort);
++    bool bound = false;
++    // The client lets go of this port as it starts the game: allow it a moment.
++    for (int attempt = 0; attempt < 40 && !(bound = bind(s, reinterpret_cast<sockaddr*>(&a), sizeof a) == 0); ++attempt)
++        std::this_thread::sleep_for(std::chrono::milliseconds(50));
++    if (!bound)
++    {
++        std::fprintf(stderr, "[ttt2net] port %u is taken: another port (only the relay may work)\n", m.localPort);
++        a.sin_port = 0;
++        if (bind(s, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0) { closesocket(s); return false; }
++    }
++    {
++        std::lock_guard l(g_m);
++        g_match = m;
++        g_sock = s;
++        g_deliver = deliver;
++        g_start = Clock::now();
++        g_noDirect = std::getenv("TTT2_NET_NODIRECT") != nullptr;
++    }
++    g_on = true;
++    local = kTag | uint64_t(m.slot + 1);
++    std::thread(Loop).detach();
++    std::fprintf(stderr, "[ttt2net] match %s as player %d on UDP %u; opponent %s, relay %s\n", path, m.slot + 1, m.localPort,
++                 m.peer.sin_port ? Show(m.peer).c_str() : "(unknown)", Show(m.relay).c_str());
++    return true;
++}
++
++uint64_t OpponentPeer() { return kTag | uint64_t(2 - g_match.slot); }
++
++bool Send(uint64_t peer, bool reliable, const void* data, size_t size)
++{
++    if (!g_on || peer != OpponentPeer()) return false;
++    std::lock_guard l(g_m);
++    g_lastGame = Clock::now();
++    Queue(reliable, kKindGame, static_cast<const uint8_t*>(data), size);
++    return true;
++}
++
++void ShareSession(uint64_t id, const std::vector<uint8_t>& record)
++{
++    if (!g_on) return;
++    std::lock_guard l(g_m);
++    auto it = g_mine.find(id);
++    if (it != g_mine.end() && it->second == record) return;
++    g_mine[id] = record;
++    std::vector<uint8_t> msg(8 + record.size());
++    Put64(msg.data(), id);
++    std::copy(record.begin(), record.end(), msg.begin() + 8);
++    Queue(true, kKindSession, msg.data(), msg.size());
++}
++
++void UnshareSession(uint64_t id)
++{
++    if (!g_on) return;
++    std::lock_guard l(g_m);
++    if (!g_mine.erase(id)) return;
++    uint8_t msg[8];
++    Put64(msg, id);
++    Queue(true, kKindUnshare, msg, sizeof msg);
++}
++
++bool OpponentSession(std::vector<uint8_t>& record)
++{
++    std::lock_guard l(g_m);
++    if (g_theirs.empty()) return false;
++    record = g_theirs.rbegin()->second;
++    return true;
++}
++
++bool TakeInvite(std::vector<uint8_t>& record)
++{
++    if (!g_on) return false;
++    std::lock_guard l(g_m);
++    if (g_theirs.empty() || !g_mine.empty()) return false;   // this PC hosts: the opponent joins it instead
++    const auto& [id, bytes] = *g_theirs.rbegin();
++    const auto now = Clock::now();
++    const bool quiet = g_lastGame == Clock::time_point{};      // never again once the two games have talked
++    if (g_offered == id && !(quiet && now - g_offeredAt >= kInviteAgain)) return false;
++    g_offered = id;
++    g_offeredAt = now;
++    record = bytes;
++    return true;
++}
++
++} // namespace net::ttt2
+diff --git a/port/src/runtime/kernel/net_ttt2.h b/port/src/runtime/kernel/net_ttt2.h
+new file mode 100644
+index 0000000..c9bddc4
+--- /dev/null
++++ b/port/src/runtime/kernel/net_ttt2.h
+@@ -0,0 +1,39 @@
++// The TTT2 Client's match transport (TTT2_NET=ttt2net): two PCs that the TTT2 Client paired on its server play
++// over UDP, directly (the client punched through both NATs on this same local port) or through the server's relay.
++// No Steam. The client writes the match to a file and starts the game with TTT2_MATCH=<file>:
++//
++//   id=<16 hex>          the match
++//   slot=0|1             0 = player 1 (the host), 1 = player 2
++//   peer=a.b.c.d:port    the opponent's public UDP address (the one the client measured)
++//   relay=a.b.c.d:port   the server's UDP relay
++//   token=<32 hex>       this PC's relay token
++//   localport=<n>        the UDP port the client used (bound again here: the NAT mapping stays the same)
++//   direct=0|1           whether the client reached the opponent directly
++//
++// On top of UDP: a reliable ordered channel (acks and retransmits) and fragmentation for both channels, so the game's
++// sockets see what Steam's messages would give them. The two game instances also swap their session records over it:
++// a session one of them publishes appears in the other's searches and as an invite (the guest joins by itself).
++#pragma once
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++namespace net::ttt2 {
++
++using Deliver = void (*)(uint64_t peer, bool reliable, const uint8_t* data, size_t size);
++
++// True when TTT2_MATCH names a readable match: the socket is bound and the threads run. `local`: this PC's peer id.
++bool Start(Deliver deliver, uint64_t& local);
++bool Send(uint64_t peer, bool reliable, const void* data, size_t size);
++uint64_t OpponentPeer();
++
++// Sessions (matchmaking.cpp): this PC's published record goes to the opponent (and its removal).
++void ShareSession(uint64_t id, const std::vector<uint8_t>& record);
++void UnshareSession(uint64_t id);
++// The opponent's session, if it has one published.
++bool OpponentSession(std::vector<uint8_t>& record);
++// An invite into the opponent's session: offered once when it appears, again every 15 s until the two games have
++// talked once (the game was not on a screen that takes invites yet).
++bool TakeInvite(std::vector<uint8_t>& record);
++
++} // namespace net::ttt2

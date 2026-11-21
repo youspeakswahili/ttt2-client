@@ -32,6 +32,8 @@ struct MatchInfo {
     std::string relayToken;        // ours
     bool direct = false;
     int rtt = 0;
+    std::string relayAddr;         // the server's UDP relay, a.b.c.d:port
+    int localPort = 0;             // the UDP port the check ran on (the game binds it again)
     uint32_t seed = 0;
 };
 
@@ -67,6 +69,10 @@ public:
     void Leave();                       // back to the lobby from a found match
     void RequestBoard();
     void Report(bool iWon);             // the match's result (from the game)
+    // The game takes over the UDP port the connection check ran on (the NATs have it open to the opponent):
+    // the client closes its socket and returns the port (0: none). Blocks for a moment.
+    int HandOffUdp();
+    void ReclaimUdp();                  // the game is gone: the client opens its port again
 
     std::string clientVersion;
     bool testNoDirect = false;   // tests: act as if the opponent cannot be reached directly (relay only)
@@ -88,6 +94,7 @@ private:
     std::deque<std::function<void()>> commands_;
     std::thread thread_;
     std::atomic<bool> stop_{ false };
+    std::atomic<int> handedPort_{ -1 };
 
     // owned by the network thread
     struct Impl;

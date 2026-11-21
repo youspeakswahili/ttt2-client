@@ -320,6 +320,13 @@ struct App::Impl {
 
     // online play (ttt2d)
     std::unique_ptr<Online> online;
+    // A match handed to the game (TTT2 Online.exe): its process, which match, and the result question after it.
+    uintptr_t matchProc = 0;
+    std::string matchStarted, matchNote;
+    bool askResult = false;
+    MatchInfo resultFor;
+    bool StartMatch(const MatchInfo& m);
+    void TickMatch();
     int qMode = 0, qSide = 0, qPing = 2;   // ranked/casual, any/1P/2P, max ping choice
     char nameBuf[32] = {};
     double lastBoard = -100;
@@ -433,7 +440,7 @@ struct App::Impl {
         layerInstalled = installed && plat::FileExists(plat::JoinPath(installDir, "xinput9_1_0.dll"));
 #endif
         installedVersion = installed ? plat::FileVersion(plat::JoinPath(installDir, plat::kGameExe)) : "";
-        gameRunning = plat::IsGameRunning();
+        gameRunning = plat::IsGameRunning() || matchProc != 0;
     }
 
     // -------------------------------------------------- devices
@@ -971,14 +978,37 @@ void App::Impl::PageOnline()
         } else {
             std::snprintf(t, sizeof t, "Connection: %d ms, %s", v.match.rtt, v.match.direct ? "direct" : "through the relay");
             Text(F.body, 14.f, col::green, t);
-            ImGui::Dummy({ 0, 6 });
-            ImGui::PushFont(F.body, 13.f);
-            Wrapped(col::dim, "Starting the game straight into this match is the next update. For now this shows the two of you can "
-                              "connect and how good that connection is.");
+            ImGui::Dummy({ 0, 8 });
+            ImGui::PushFont(F.body, 14.f);
+            if (matchProc) {
+                Text(F.bold, 15.f, col::text, "The game is starting.");
+                Wrapped(col::dim, v.match.side == "p1"
+                    ? "You host. In the game: ONLINE MODE, then PLAYER MATCH, then CREATE SESSION. Your opponent joins you by themselves."
+                    : "Your opponent hosts. Wait on the game's main menu: you join their session by yourself as soon as they create it.");
+                ImGui::Dummy({ 0, 4 });
+                Wrapped(col::faint, "Play your sets, then close the game. The client asks who won.");
+            } else if (askResult) {
+                Text(F.bold, 16.f, col::text, "Who won?");
+                Wrapped(col::dim, "Both of you answer. When the answers agree, the result counts.");
+                ImGui::Dummy({ 0, 6 });
+                if (BigButton("I WON", { 150, 44 })) { online->Report(true); askResult = false; }
+                ImGui::SameLine(0, 10);
+                if (BigButton("I LOST", { 150, 44 })) { online->Report(false); askResult = false; }
+                ImGui::SameLine(0, 10);
+                if (Button("Play again", { 130, 44 })) { askResult = false; matchStarted.clear(); }
+            } else if (!matchNote.empty()) {
+                Wrapped(col::amber, matchNote.c_str());
+                ImGui::Dummy({ 0, 4 });
+                if (Button("Try again", { 130, 34 })) { matchNote.clear(); matchStarted.clear(); }
+            } else if (!installed) {
+                Wrapped(col::amber, "Set up the game first (INSTALL page).");
+            } else {
+                Wrapped(col::dim, "Result sent. Waiting for your opponent's answer...");
+            }
             ImGui::PopFont();
         }
         ImGui::Dummy({ 0, 10 });
-        if (Button(v.state == Online::READY ? "Back to lobby" : "Leave", { 150, 34 })) online->Leave();
+        if (!matchProc && Button(v.state == Online::READY ? "Back to lobby" : "Leave", { 150, 34 })) { online->Leave(); askResult = false; }
         EndCard();
     }
 
@@ -1470,8 +1500,53 @@ void App::Impl::PageInstall()
     ImGui::PopFont();
 }
 
+// The online build sits next to the client (test builds: never in the public release); it is copied into the game
+// folder, where it finds the game's files, when missing there or different.
+bool App::Impl::StartMatch(const MatchInfo& m)
+{
+    matchStarted = m.id;
+    const std::string src = plat::JoinPath(plat::ExeDir(), plat::kOnlineExe), dst = plat::JoinPath(installDir, plat::kOnlineExe);
+    std::string a, b, err;
+    if (plat::FileExists(src)) {
+        // size and contents compared cheaply: a different size or a newer build copies
+        const bool same = plat::FileExists(dst) && plat::FileVersion(src) == plat::FileVersion(dst) && plat::ReadBinary(src, a) &&
+                          plat::ReadBinary(dst, b) && a.size() == b.size() && a == b;
+        if (!same && !plat::CopyFileElevated(src, dst, err)) { matchNote = "Could not put the online build into the game folder: " + err; return false; }
+    } else if (!plat::FileExists(dst)) {
+        matchNote = std::string("This test needs ") + plat::kOnlineExe + " next to TTT2 Client.exe.";
+        return false;
+    }
+    const int port = online->HandOffUdp();
+    const std::string file = plat::JoinPath(plat::ClientDataDir(), "match.ini");
+    std::string ini = "id=" + m.id + "\nslot=" + (m.side == "p1" ? "0" : "1") + "\npeer=" + m.peerAddr + "\nrelay=" + m.relayAddr +
+                      "\ntoken=" + m.relayToken + "\nlocalport=" + std::to_string(port) + "\ndirect=" + (m.direct ? "1" : "0") + "\n";
+    if (!plat::WriteText(file, ini)) { online->ReclaimUdp(); matchNote = "Could not write the match file."; return false; }
+    matchProc = plat::LaunchWithEnv(installDir, plat::kOnlineExe,
+                                    { { "TTT2_NET", "ttt2net" }, { "TTT2_MATCH", file }, { "TTT2_ROLLBACK", "1" } }, err);
+    if (!matchProc) { online->ReclaimUdp(); matchNote = "Could not start the game: " + err; return false; }
+    gameRunning = true;
+    matchNote.clear();
+    resultFor = m;
+    return true;
+}
+
+void App::Impl::TickMatch()
+{
+    if (!online) return;
+    if (matchProc && plat::ProcessDone(matchProc)) {
+        matchProc = 0;
+        online->ReclaimUdp();
+        askResult = true;
+        Probe();
+    }
+    const Online::View v = online->Snapshot();
+    if (v.state == Online::READY && !matchProc && !askResult && matchStarted != v.match.id && installed) StartMatch(v.match);
+    if (askResult && v.state != Online::READY) askResult = false;   // the server settled it (both reported, or a forfeit)
+}
+
 void App::Impl::UpdateBanner()
 {
+    TickMatch();
     // after an update: the game's controller layer follows the client's (once; may ask for admin)
     if (justUpdated && !builder.Running()) {
         justUpdated = false;

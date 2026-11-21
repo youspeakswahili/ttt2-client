@@ -248,6 +248,37 @@ bool LaunchGame(const std::string& dir, std::string& error)
     CloseHandle(pi.hProcess);
     return true;
 }
+uintptr_t LaunchWithEnv(const std::string& dir, const std::string& exeName,
+                        const std::vector<std::pair<std::string, std::string>>& env, std::string& error)
+{
+    // The child inherits the client's environment plus these (set for the moment of the start only).
+    std::vector<std::pair<std::wstring, std::wstring>> old;
+    for (const auto& [k, v] : env) {
+        wchar_t buf[4096];
+        const DWORD n = GetEnvironmentVariableW(W(k).c_str(), buf, 4096);
+        old.emplace_back(W(k), n && n < 4096 ? std::wstring(buf, n) : std::wstring(L"\x01"));
+        SetEnvironmentVariableW(W(k).c_str(), W(v).c_str());
+    }
+    std::wstring exe = W(JoinPath(dir, exeName));
+    std::wstring cmd = L"\"" + exe + L"\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    const BOOL ok = CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, W(dir).c_str(), &si, &pi);
+    if (!ok) error = LastError();
+    for (const auto& [k, v] : old) SetEnvironmentVariableW(k.c_str(), v == L"\x01" ? nullptr : v.c_str());
+    if (!ok) return 0;
+    CloseHandle(pi.hThread);
+    return reinterpret_cast<uintptr_t>(pi.hProcess);
+}
+bool ProcessDone(uintptr_t handle)
+{
+    if (!handle) return true;
+    HANDLE h = reinterpret_cast<HANDLE>(handle);
+    if (WaitForSingleObject(h, 0) != WAIT_OBJECT_0) return false;
+    CloseHandle(h);
+    return true;
+}
 void OpenFolder(const std::string& dir) { ShellExecuteW(nullptr, L"open", W(dir).c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
 void OpenUrl(const std::string& url) { ShellExecuteW(nullptr, L"open", W(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
 

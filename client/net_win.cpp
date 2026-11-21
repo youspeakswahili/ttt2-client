@@ -124,6 +124,12 @@ class WinUdp : public Udp {
 public:
     SOCKET s = INVALID_SOCKET;
     ~WinUdp() override { if (s != INVALID_SOCKET) closesocket(s); }
+    int LocalPort() const override
+    {
+        sockaddr_in a{};
+        int n = sizeof a;
+        return getsockname(s, reinterpret_cast<sockaddr*>(&a), &n) == 0 ? ntohs(a.sin_port) : 0;
+    }
     static bool Parse(const std::string& addr, sockaddr_in& out)
     {
         const size_t colon = addr.rfind(':');
@@ -213,7 +219,7 @@ std::unique_ptr<Ws> WsConnect(const std::string& host, int port, const std::stri
     return c;
 }
 
-std::unique_ptr<Udp> UdpOpen(std::string& error)
+std::unique_ptr<Udp> UdpOpen(std::string& error, int port)
 {
     static bool started = [] { WSADATA d; return WSAStartup(MAKEWORD(2, 2), &d) == 0; }();
     if (!started) { error = "Networking is not available."; return nullptr; }
@@ -222,6 +228,7 @@ std::unique_ptr<Udp> UdpOpen(std::string& error)
     if (u->s == INVALID_SOCKET) { error = "Could not open a UDP socket."; return nullptr; }
     sockaddr_in any{};
     any.sin_family = AF_INET;
+    any.sin_port = htons(uint16_t(port));
     if (bind(u->s, reinterpret_cast<sockaddr*>(&any), sizeof any) != 0) { error = "Could not open a UDP socket."; return nullptr; }
     BOOL no = FALSE;   // SIO_UDP_CONNRESET off: an unreachable peer must not break the socket
     DWORD ret = 0;

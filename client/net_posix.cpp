@@ -134,6 +134,12 @@ class PosixUdp : public Udp {
 public:
     int fd = -1;
     ~PosixUdp() override { if (fd >= 0) close(fd); }
+    int LocalPort() const override
+    {
+        sockaddr_in a{};
+        socklen_t n = sizeof a;
+        return getsockname(fd, reinterpret_cast<sockaddr*>(&a), &n) == 0 ? ntohs(a.sin_port) : 0;
+    }
     static bool Parse(const std::string& addr, sockaddr_in& out)
     {
         const size_t colon = addr.rfind(':');
@@ -208,12 +214,13 @@ std::unique_ptr<Ws> WsConnect(const std::string& host, int port, const std::stri
     return c;
 }
 
-std::unique_ptr<Udp> UdpOpen(std::string& error)
+std::unique_ptr<Udp> UdpOpen(std::string& error, int port)
 {
     auto u = std::make_unique<PosixUdp>();
     u->fd = socket(AF_INET, SOCK_DGRAM, 0);
     sockaddr_in any{};
     any.sin_family = AF_INET;
+    any.sin_port = htons(uint16_t(port));
     if (u->fd < 0 || bind(u->fd, reinterpret_cast<sockaddr*>(&any), sizeof any) != 0) { error = "Could not open a UDP socket."; return nullptr; }
     return u;
 }

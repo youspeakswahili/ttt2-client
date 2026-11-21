@@ -65,6 +65,32 @@ int main(int argc, char** argv)
     assert(va.match.direct == !relayOnly);
     assert(va.match.seed == vb.match.seed && va.match.seed != 0);
 
+    // The game's transport (net_ttt2.cpp, built for Linux as NT_BIN) takes over each client's UDP port and plays a
+    // stream of messages through what the server handed out: the opponent's address, the relay and its tokens.
+    if (const char* nt = std::getenv("NT_BIN")) {
+        const int pa = a.HandOffUdp(), pb = b.HandOffUdp();
+        assert(pa > 0 && pb > 0);
+        auto ini = [&](const MatchInfo& m, int port, const std::string& file) {
+            const std::string text = "id=" + m.id + "\nslot=" + (m.side == "p1" ? "0" : "1") + "\npeer=" + m.peerAddr + "\nrelay=" +
+                                     m.relayAddr + "\ntoken=" + m.relayToken + "\nlocalport=" + std::to_string(port) +
+                                     "\ndirect=" + (m.direct ? "1" : "0") + "\n";
+            FILE* f = std::fopen(file.c_str(), "w");
+            std::fputs(text.c_str(), f);
+            std::fclose(f);
+            std::printf("%s", text.c_str());
+        };
+        ini(va.match, pa, base + "/a.ini");
+        ini(vb.match, pb, base + "/b.ini");
+        const std::string cmd = "TTT2_MATCH=" + base + "/a.ini " + nt + " " + (std::getenv("NT_N") ? std::getenv("NT_N") : "1500") + " > " + base + "/a.out 2>&1 & A=$!; TTT2_MATCH=" + base +
+                                "/b.ini " + nt + " " + (std::getenv("NT_N") ? std::getenv("NT_N") : "1500") + " > " + base + "/b.out 2>&1; B=$?; wait $A; A=$?; cat " + base + "/a.out " + base +
+                                "/b.out | grep -v '^\\[ttt2net\\] sending'; test $A = 0 -a $B = 0";
+        const int r = std::system(cmd.c_str());
+        assert(r == 0);
+        a.ReclaimUdp();
+        b.ReclaimUdp();
+        std::puts("the game transport played through the match the server made");
+    }
+
     a.Report(true);
     b.Report(false);
     assert(WaitFor(a, Online::LOBBY, 5000, "a"));

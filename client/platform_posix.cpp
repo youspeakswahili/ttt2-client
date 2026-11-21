@@ -34,6 +34,12 @@ std::string RegisteredInstall() { return std::getenv("TTT2_FAKE_INSTALL") ? "C:\
 std::string FileVersion(const std::string&) { return std::getenv("TTT2_FAKE_INSTALL") ? "0.2.0" : ""; }
 bool IsGameRunning() { return false; }
 bool LaunchGame(const std::string&, std::string& e) { e = "not on this platform"; return false; }
+uintptr_t LaunchWithEnv(const std::string&, const std::string&, const std::vector<std::pair<std::string, std::string>>&, std::string& e)
+{
+    e = "not on this platform";
+    return 0;
+}
+bool ProcessDone(uintptr_t) { return true; }
 void OpenFolder(const std::string&) {}
 void OpenUrl(const std::string&) {}
 int RunElevatedAndWait(const std::string&, const std::string&, std::string& e) { e = "not on this platform"; return -1; }

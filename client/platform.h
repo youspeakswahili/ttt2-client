@@ -44,6 +44,12 @@ std::string FileVersion(const std::string& exe);  // VERSIONINFO ProductVersion,
 // Processes
 bool IsGameRunning();
 bool LaunchGame(const std::string& dir, std::string& error);
+// The online build (kOnlineExe in the game folder) started for one match with extra environment variables.
+// Returns a process handle (0 = failed); ProcessDone(handle) is true once it exited (and closes the handle).
+static const char kOnlineExe[] = "TTT2 Online.exe";
+uintptr_t LaunchWithEnv(const std::string& dir, const std::string& exeName,
+                        const std::vector<std::pair<std::string, std::string>>& env, std::string& error);
+bool ProcessDone(uintptr_t handle);
 void OpenFolder(const std::string& dir);
 void OpenUrl(const std::string& url);
 

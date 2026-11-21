@@ -39,6 +39,7 @@ struct Online::Impl {
     int udpPort = 27620;
     uint64_t nextReflect = 0, nextPing = 0, nextConnect = 0;
     std::string pendingRegister;  // a name to register on the next connection
+    int handedPort = 0;           // the port the game has now
 
     // the connection check of the current proposal
     bool checking = false, checkSent = false;
@@ -144,6 +145,33 @@ void Online::Report(bool iWon)
             id = view_.match.id;
         }
         if (!id.empty()) SendJson("{\"t\":\"result\",\"match\":" + json::Quote(id) + ",\"winner\":\"" + (iWon ? "me" : "opponent") + "\"}");
+    });
+}
+
+int Online::HandOffUdp()
+{
+    handedPort_ = -1;
+    Post([this] {
+        Impl& impl = *p_;
+        const int port = impl.udp ? impl.udp->LocalPort() : 0;
+        impl.udp.reset();
+        impl.handedPort = port;
+        handedPort_ = port;
+    });
+    for (int i = 0; i < 100 && handedPort_ < 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    return handedPort_ < 0 ? 0 : handedPort_.load();
+}
+
+void Online::ReclaimUdp()
+{
+    Post([this] {
+        Impl& impl = *p_;
+        if (impl.udp) return;
+        std::string err;
+        impl.udp = net::UdpOpen(err, impl.handedPort);
+        if (!impl.udp) impl.udp = net::UdpOpen(err);
+        impl.handedPort = 0;
+        impl.nextReflect = 0;
     });
 }
 
@@ -306,6 +334,8 @@ void Online::Handle(const std::string& text)
     } else if (t == "go") {
         if (v.match.id == m["match"].Str()) {
             v.state = READY;
+            v.match.relayAddr = v.match.relayPort ? v.match.relayHost + ":" + std::to_string(v.match.relayPort) : impl.serverUdp;
+            v.match.localPort = impl.udp ? impl.udp->LocalPort() : 0;
             v.match.direct = m["direct"].Bool();
             v.match.rtt = m["rtt"].Int();
             v.match.seed = uint32_t(m["seed"].Num());

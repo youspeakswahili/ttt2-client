@@ -30,8 +30,10 @@ public:
     virtual bool SendTo(const std::string& addr, const void* data, size_t size) = 0;
     // 1: a packet; 0: none within timeoutMs; -1: error
     virtual int Recv(std::string& from, std::string& data, int timeoutMs) = 0;
+    virtual int LocalPort() const = 0;
 };
-std::unique_ptr<Udp> UdpOpen(std::string& error);
+// port 0: any free port.
+std::unique_ptr<Udp> UdpOpen(std::string& error, int port = 0);
 
 // Keeps the account's secret for this Windows user only (DPAPI); a no-op off Windows.
 std::string Protect(const std::string& secret);
