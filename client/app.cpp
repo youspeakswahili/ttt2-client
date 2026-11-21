@@ -232,6 +232,29 @@ std::string SourceName(const Source& s)
     return t;
 }
 
+// What the player's own controller calls each button (SDL's gamepad type)
+enum PadFamily { FAM_XBOX, FAM_PLAYSTATION, FAM_NINTENDO, FAM_OTHER };
+PadFamily FamilyOf(SDL_Gamepad* pad)
+{
+    if (!pad) return FAM_OTHER;
+    switch (SDL_GetGamepadType(pad)) {
+    case SDL_GAMEPAD_TYPE_PS3: case SDL_GAMEPAD_TYPE_PS4: case SDL_GAMEPAD_TYPE_PS5: return FAM_PLAYSTATION;
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO: case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT: case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR: return FAM_NINTENDO;
+    case SDL_GAMEPAD_TYPE_XBOX360: case SDL_GAMEPAD_TYPE_XBOXONE: return FAM_XBOX;
+    default: return FAM_XBOX;   // SDL's standard layout is Xbox-shaped
+    }
+}
+// The output's physical button on that controller family (by position: west, north, south, east)
+const char* PadButtonName(PadFamily f, int out)
+{
+    static const char* xbox[O_COUNT] = { "D-pad up", "D-pad down", "D-pad left", "D-pad right", "Start", "Back", "LS", "RS", "LB", "RB", "A", "B", "X", "Y", "LT", "RT" };
+    static const char* ps[O_COUNT] = { "D-pad up", "D-pad down", "D-pad left", "D-pad right", "Options", "Share", "L3", "R3", "L1", "R1", "Cross", "Circle", "Square", "Triangle", "L2", "R2" };
+    static const char* nin[O_COUNT] = { "D-pad up", "D-pad down", "D-pad left", "D-pad right", "+", "-", "LS", "RS", "L", "R", "B", "A", "Y", "X", "ZL", "ZR" };
+    if (out < 0 || out >= O_M12) return "";
+    return f == FAM_PLAYSTATION ? ps[out] : f == FAM_NINTENDO ? nin[out] : xbox[out];
+}
+
 // SDL's gamepad layout as the default sources of each output (shown for gamepads without a custom map)
 const char* DefaultBinding(int out)
 {
@@ -325,7 +348,7 @@ struct App::Impl {
 
     // the client's own updates
     Updater updater;
-    bool wantsQuit = false, justUpdated = false, layerOutdated = false;
+    bool wantsQuit = false, justUpdated = false, layerOutdated = false, autoInstall = false;
     std::string updateNote;
     void CheckLayer()
     {
@@ -1087,7 +1110,11 @@ void App::Impl::PageControls()
         ImGui::PopFont();
         ImGui::PushFont(F.body, 12.f);
         const bool custom = input.Find(dvc.guid) != nullptr;
-        d->AddText({ p.x + 12, p.y + 30 }, custom ? col::gold : col::dim, custom ? "Custom map" : dvc.pad ? "Gamepad layout" : "Generic layout");
+        {
+            const PadFamily fam = FamilyOf(dvc.pad);
+            const char* kind = !dvc.pad ? "Stick / generic layout" : fam == FAM_PLAYSTATION ? "PlayStation layout" : fam == FAM_NINTENDO ? "Nintendo layout" : "Xbox layout";
+            d->AddText({ p.x + 12, p.y + 30 }, custom ? col::gold : col::dim, custom ? "Custom map" : kind);
+        }
         ImGui::PopFont();
         ImGui::Dummy({ 0, 4 });
         ImGui::PopID();
@@ -1180,6 +1207,8 @@ void App::Impl::PageControls()
                 std::string s;
                 for (auto& src : m->out[row.out]) s += (s.empty() ? "" : "  +  ") + SourceName(src);
                 Text(custom ? F.bold : F.body, 13.5f, s.empty() ? col::faint : col::text, s.empty() ? "Not set" : s.c_str());
+            } else if (dv && dv->pad && row.out < O_M12) {
+                Text(F.body, 13.5f, col::text, PadButtonName(FamilyOf(dv->pad), row.out));
             } else {
                 Text(F.body, 13.5f, dv ? col::text : col::faint, dv ? DefaultBinding(row.out) : "-");
             }
@@ -1331,19 +1360,6 @@ void App::Impl::PageInstall()
         Text(F.bold, 15.f, col::text, installDir.c_str());
         std::string v = "Port version " + (installedVersion.empty() ? std::string("unknown") : installedVersion);
         Text(F.body, 13.5f, col::dim, v.c_str());
-        // the result of "Check port updates", in words
-        const std::string latest = builder.LatestTag();
-        if (builder.Checking()) {
-            Text(F.bold, 14.f, col::dim, "Checking the port's GitHub page...");
-        } else if (!builder.CheckError().empty()) {
-            Text(F.bold, 14.f, col::red, ("Could not check: " + builder.CheckError()).c_str());
-        } else if (!latest.empty()) {
-            const std::string bare = latest[0] == 'v' ? latest.substr(1) : latest;
-            if (!installedVersion.empty() && !Updater::Newer(bare, installedVersion))
-                Text(F.bold, 14.f, col::green, ("You have the latest port (" + latest + ").").c_str());
-            else
-                Text(F.bold, 14.f, col::amber, ("Port " + latest + " is out. Press REBUILD below to update (it needs your disc image and Title Update 3 again).").c_str());
-        }
         ImGui::Dummy({ 0, 6 });
         if (Button(layerInstalled ? "Reinstall controller layer" : "Install controller layer", { 220, 32 }, !busy && !gameRunning)) {
             BuildRequest r;
@@ -1351,8 +1367,7 @@ void App::Impl::PageInstall()
             r.onlyLayer = true;
             builder.Start(r);
         }
-        ImGui::SameLine();
-        if (Button(builder.Checking() ? "Checking..." : "Check port updates", { 180, 32 }, !builder.Checking())) builder.CheckLatest();
+
         ImGui::SameLine();
         if (Button("Open folder", { 130, 32 })) plat::OpenFolder(installDir);
         if (gameRunning) { ImGui::Dummy({ 0, 2 }); Text(F.body, 13.f, col::amber, "Close the game to change its files."); }
@@ -1468,6 +1483,7 @@ void App::Impl::UpdateBanner()
         CheckLayer();
         Probe();
     }
+    if (autoInstall && updater.GetState() == Updater::READY) { autoInstall = false; InstallUpdate(); }
     const Updater::State st = updater.GetState();
     if (st != Updater::AVAILABLE && st != Updater::DOWNLOADING && st != Updater::READY && updateNote.empty() &&
         !(st == Updater::FAILED && !updater.Latest().empty()))
@@ -1479,9 +1495,9 @@ void App::Impl::UpdateBanner()
     ImGui::BeginChild("update", { 0, 0 }, ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
     std::string title, sub;
     if (!updateNote.empty()) { title = "Update"; sub = updateNote; }
-    else if (st == Updater::AVAILABLE) { title = "TTT2 Client " + updater.Latest() + " is out"; sub = std::string("You have ") + TTT2_CLIENT_VERSION + ". Updating takes a few seconds."; }
-    else if (st == Updater::DOWNLOADING) { title = "Downloading " + updater.Latest(); sub = "Checking its signature as it arrives."; }
-    else if (st == Updater::READY) { title = "TTT2 Client " + updater.Latest() + " is ready"; sub = "Checked and signed. Install it and the client restarts."; }
+    else if (st == Updater::AVAILABLE) { title = "TTT2 Client " + updater.Latest() + " is out"; sub = std::string("You have ") + TTT2_CLIENT_VERSION + ". One click: it downloads, installs and restarts."; }
+    else if (st == Updater::DOWNLOADING) { title = "Updating to " + updater.Latest(); sub = "Downloading and checking it. The client restarts by itself."; }
+    else if (st == Updater::READY) { title = "Installing " + updater.Latest(); sub = "Restarting..."; }
     else { title = "Update failed"; sub = updater.Error(); }
     ImGui::BeginGroup();
     Text(F.display, 20.f, col::text, title.c_str());
@@ -1499,9 +1515,7 @@ void App::Impl::UpdateBanner()
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 160 + ImGui::GetStyle().WindowPadding.x);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6);
         if (st == Updater::AVAILABLE || st == Updater::FAILED) {
-            if (BigButton(st == Updater::FAILED ? "TRY AGAIN" : "UPDATE", { 160, 40 })) updater.Download();
-        } else if (st == Updater::READY) {
-            if (BigButton("INSTALL", { 160, 40 })) InstallUpdate();
+            if (BigButton(st == Updater::FAILED ? "TRY AGAIN" : "UPDATE", { 160, 40 })) { autoInstall = true; updater.Download(); }
         }
     }
     ImGui::EndChild();
