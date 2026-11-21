@@ -1,0 +1,7 @@
+out/
+obj/
+build/
+__pycache__/
+*.exe
+*.dll
+*.zip
