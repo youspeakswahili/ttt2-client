@@ -62,6 +62,8 @@ int main(int argc, char** argv)
     App app;
     app.Init(window, scale);
     if (shotPage >= 0) app.SetPage(shotPage);
+    for (int i = 1; i < argc; ++i)
+        if (std::strcmp(argv[i], "--updated") == 0) app.JustUpdated();
 
     int frames = 0;
     bool running = true;
@@ -78,6 +80,7 @@ int main(int argc, char** argv)
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
         app.Frame();
+        if (app.WantsQuit()) running = false;
         ImGui::Render();
         SDL_SetRenderDrawColor(renderer, 9, 9, 12, 255);
         SDL_RenderClear(renderer);

@@ -2,6 +2,8 @@
 // usable with a controller (D-pad / stick to move, A to choose, LB / RB to change page).
 #include "app.h"
 #include "builder.h"
+#include "updater.h"
+#include "version.h"
 #include "ini.h"
 #include "platform.h"
 #include "../common/input_config.h"
@@ -290,6 +292,32 @@ struct App::Impl {
     std::string settingsNote;
     double settingsNoteAt = -10;
 
+    // the client's own updates
+    Updater updater;
+    bool wantsQuit = false, justUpdated = false, layerOutdated = false;
+    std::string updateNote;
+    void CheckLayer()
+    {
+        // the game's copy of the controller layer against the one that came with this client
+        std::string mine, theirs;
+        layerOutdated = installed && plat::ReadBinary(plat::JoinPath(plat::ExeDir(), "xinput9_1_0.dll"), mine) &&
+                        plat::ReadBinary(plat::JoinPath(installDir, "xinput9_1_0.dll"), theirs) && mine != theirs;
+    }
+    void UpdateLayer()
+    {
+        BuildRequest r;
+        r.dest = installDir;
+        r.onlyLayer = true;
+        builder.Start(r);
+    }
+    void InstallUpdate()
+    {
+        std::string err;
+        if (!updater.Apply(err)) { updateNote = err; return; }
+        if (plat::Relaunch("--updated")) wantsQuit = true;
+        else updateNote = "Updated. Close and reopen the client to finish.";
+    }
+
     // install page
     Builder builder;
     std::string iso, tu, dlc, dest;
@@ -316,6 +344,9 @@ struct App::Impl {
         if (plat::ReadText(plat::JoinPath(plat::ClientDataDir(), "input.ini"), t)) ParseConfig(t, input);
         LoadGameSettings();
         Probe();
+        CheckLayer();
+        Updater::CleanUpOldFiles();
+        updater.Check();
     }
     void SaveClient()
     {
@@ -573,6 +604,7 @@ struct App::Impl {
 
     // -------------------------------------------------- frame
     void Frame();
+    void UpdateBanner();
     void Sidebar(float w, float h);
     void Header(const char* title, const char* subtitle);
     void PagePlay();
@@ -708,7 +740,13 @@ void App::Impl::PagePlay()
     ImGui::BeginChild("readycol", { half, 0 }, ImGuiChildFlags_AutoResizeY);
     BeginCard("readycard", 0, "Ready check");
     Check(installed, "Game installed", installed ? "Built from your disc image." : "Go to Install.");
-    Check(layerInstalled, "Every controller supported", layerInstalled ? "The controller layer is in the game's folder." : "Install it from the Install page.");
+    if (layerInstalled && layerOutdated) {
+        Check(false, "Controller layer out of date", "This client has a newer one for the game's folder.");
+        ImGui::SameLine();
+        if (Button(builder.Running() ? "Updating..." : "Update it", { 110, 28 }, !builder.Running() && !gameRunning)) UpdateLayer();
+    } else {
+        Check(layerInstalled, "Every controller supported", layerInstalled ? "The controller layer is in the game's folder." : "Install it from the Install page.");
+    }
     const bool delayOff = game.GetInt("Game", "InputDelay", 0) == 0;
     Check(delayOff, "Offline input delay removed", delayOff ? "The original game's 2 extra frames are gone." : "Turned back on in Settings.");
     const int ll = game.GetInt("Display", "LowLatencyMode", 2);
@@ -1084,7 +1122,7 @@ void App::Impl::PageInstall()
             builder.Start(r);
         }
         ImGui::SameLine();
-        if (Button(builder.Checking() ? "Checking..." : "Check for updates", { 170, 32 }, !builder.Checking())) builder.CheckLatest();
+        if (Button(builder.Checking() ? "Checking..." : "Check port updates", { 180, 32 }, !builder.Checking())) builder.CheckLatest();
         ImGui::SameLine();
         if (Button("Open folder", { 130, 32 })) plat::OpenFolder(installDir);
         if (gameRunning) { ImGui::Dummy({ 0, 2 }); Text(F.body, 13.f, col::amber, "Close the game to change its files."); }
@@ -1161,13 +1199,85 @@ void App::Impl::PageInstall()
             if (!builder.InstalledTag().empty()) client.Set("client", "installed_tag", builder.InstalledTag());
             SaveClient();
             Probe();
+            CheckLayer();
         }
     }
+    ImGui::Dummy({ 0, 12 });
+    BeginCard("clientver", 0, "This client");
+    {
+        std::string v = std::string("Version ") + TTT2_CLIENT_VERSION;
+        const Updater::State st = updater.GetState();
+        if (st == Updater::UP_TO_DATE) v += "  ·  up to date";
+        else if (st == Updater::AVAILABLE || st == Updater::READY) v += "  ·  " + updater.Latest() + " available (see the top of the page)";
+        else if (st == Updater::FAILED) v += "  ·  " + updater.Error();
+        Text(F.body, 14.f, col::text, v.c_str());
+        ImGui::Dummy({ 0, 4 });
+        if (Button(st == Updater::CHECKING ? "Checking..." : "Check for updates", { 170, 32 }, st != Updater::CHECKING && st != Updater::DOWNLOADING))
+            updater.Check();
+        ImGui::SameLine();
+        if (Button("Releases page", { 140, 32 })) plat::OpenUrl(std::string("https://github.com/") + Updater::kRepo + "/releases");
+    }
+    EndCard();
     ImGui::Dummy({ 0, 10 });
     ImGui::PushFont(F.body, 12.5f);
     Wrapped(col::faint, "Tekken Tag Tournament 2 PC port by shihabal3amri (github.com/shihabal3amri/tekken-tag-tournament-2-pc). "
                         "This client is not affiliated with the port's author or with Bandai Namco.");
     ImGui::PopFont();
+}
+
+void App::Impl::UpdateBanner()
+{
+    // after an update: the game's controller layer follows the client's (once; may ask for admin)
+    if (justUpdated && !builder.Running()) {
+        justUpdated = false;
+        CheckLayer();
+        if (layerOutdated && !gameRunning) UpdateLayer();
+    }
+    if (builder.Finished() && page != INSTALL) {   // a layer update started from here
+        builder.Acknowledge();
+        CheckLayer();
+        Probe();
+    }
+    const Updater::State st = updater.GetState();
+    if (st != Updater::AVAILABLE && st != Updater::DOWNLOADING && st != Updater::READY && updateNote.empty() &&
+        !(st == Updater::FAILED && !updater.Latest().empty()))
+        return;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, V(Alpha(col::gold, 0.10f)));
+    ImGui::PushStyleColor(ImGuiCol_Border, V(Alpha(col::gold, 0.45f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 20, 14 });
+    ImGui::BeginChild("update", { 0, 0 }, ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+    std::string title, sub;
+    if (!updateNote.empty()) { title = "Update"; sub = updateNote; }
+    else if (st == Updater::AVAILABLE) { title = "TTT2 Client " + updater.Latest() + " is out"; sub = std::string("You have ") + TTT2_CLIENT_VERSION + ". Updating takes a few seconds."; }
+    else if (st == Updater::DOWNLOADING) { title = "Downloading " + updater.Latest(); sub = "Checking its signature as it arrives."; }
+    else if (st == Updater::READY) { title = "TTT2 Client " + updater.Latest() + " is ready"; sub = "Checked and signed. Install it and the client restarts."; }
+    else { title = "Update failed"; sub = updater.Error(); }
+    ImGui::BeginGroup();
+    Text(F.display, 20.f, col::text, title.c_str());
+    ImGui::PushFont(F.body, 13.f);
+    Wrapped(st == Updater::FAILED ? col::red : col::dim, sub.c_str());
+    ImGui::PopFont();
+    if (st == Updater::DOWNLOADING) {
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, V(col::gold));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, V(col::cardHi));
+        ImGui::ProgressBar(updater.Progress(), { 300, 6 }, "");
+        ImGui::PopStyleColor(2);
+    }
+    ImGui::EndGroup();
+    if (updateNote.empty()) {
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 160 + ImGui::GetStyle().WindowPadding.x);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6);
+        if (st == Updater::AVAILABLE || st == Updater::FAILED) {
+            if (BigButton(st == Updater::FAILED ? "TRY AGAIN" : "UPDATE", { 160, 40 })) updater.Download();
+        } else if (st == Updater::READY) {
+            if (BigButton("INSTALL", { 160, 40 })) InstallUpdate();
+        }
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    ImGui::Dummy({ 0, 12 });
 }
 
 void App::Impl::Frame()
@@ -1203,6 +1313,7 @@ void App::Impl::Frame()
     ImGui::SameLine(0, 0);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 44, 34 });
     ImGui::BeginChild("main", { 0, vp->Size.y }, ImGuiChildFlags_AlwaysUseWindowPadding);
+    UpdateBanner();
     switch (page) {
     case PLAY: Header("PLAY", "Your game, your controller, ready to fight."); PagePlay(); break;
     case CONTROLS: PageControls(); break;
@@ -1305,4 +1416,6 @@ void App::Event(const SDL_Event& e)
 }
 
 void App::Frame() { p_->Frame(); }
+void App::JustUpdated() { p_->justUpdated = true; }
+bool App::WantsQuit() const { return p_->wantsQuit; }
 void App::SetPage(int page) { p_->page = Impl::Page(std::clamp(page, 0, int(Impl::PAGE_COUNT) - 1)); }

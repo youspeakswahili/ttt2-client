@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
+#include <cstdio>
 
 namespace plat {
 std::string JoinPath(const std::string& a, const std::string& b) { return a.empty() ? b : a.back() == '/' ? a + b : a + "/" + b; }
@@ -21,6 +22,13 @@ bool ReadText(const std::string& p, std::string& out) { std::ifstream f(p, std::
 bool WriteText(const std::string& p, const std::string& t) { std::ofstream f(p, std::ios::binary); f << t; return bool(f); }
 bool CopyFileTo(const std::string&, const std::string&, std::string& e) { e = "not on this platform"; return false; }
 uint64_t FreeBytes(const std::string&) { return 120ull << 30; }
+bool ReadBinary(const std::string& p, std::string& out) { std::ifstream f(p, std::ios::binary); if (!f) return false; std::stringstream ss; ss << f.rdbuf(); out = ss.str(); return true; }
+bool WriteBinary(const std::string& p, const std::string& d) { std::ofstream f(p, std::ios::binary); f << d; return bool(f); }
+bool MoveFileReplace(const std::string& from, const std::string& to) { return std::rename(from.c_str(), to.c_str()) == 0; }
+bool DeleteFileAt(const std::string& p) { return std::remove(p.c_str()) == 0; }
+void MakeDir(const std::string& d) { mkdir(d.c_str(), 0755); }
+std::vector<std::string> ListFilesRecursive(const std::string&) { return {}; }
+bool Relaunch(const std::string&) { return false; }
 bool LooksLikeInstall(const std::string& dir) { return std::getenv("TTT2_FAKE_INSTALL") && !dir.empty(); }
 std::string RegisteredInstall() { return std::getenv("TTT2_FAKE_INSTALL") ? "C:\\Games\\Tekken Tag Tournament 2" : ""; }
 std::string FileVersion(const std::string&) { return std::getenv("TTT2_FAKE_INSTALL") ? "0.2.0" : ""; }

@@ -1,9 +1,10 @@
 #include <winver.h>
+#include "../version.h"
 1 ICON "client.ico"
 1 24 "client.manifest"
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,1,6,0
-PRODUCTVERSION 0,1,6,0
+FILEVERSION TTT2_CLIENT_VERSION_COMMAS
+PRODUCTVERSION TTT2_CLIENT_VERSION_COMMAS
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -11,8 +12,8 @@ BEGIN
     BEGIN
       VALUE "FileDescription", "TTT2 Client"
       VALUE "ProductName", "TTT2 Client"
-      VALUE "ProductVersion", "0.1.6"
-      VALUE "FileVersion", "0.1.6"
+      VALUE "ProductVersion", TTT2_CLIENT_VERSION
+      VALUE "FileVersion", TTT2_CLIENT_VERSION
     END
   END
   BLOCK "VarFileInfo"

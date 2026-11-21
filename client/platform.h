@@ -26,6 +26,14 @@ bool ReadText(const std::string& path, std::string& out);
 bool WriteText(const std::string& path, const std::string& text);   // atomic (temp file + rename)
 bool CopyFileTo(const std::string& from, const std::string& to, std::string& error);
 uint64_t FreeBytes(const std::string& dir);   // free space on dir's drive (or its nearest existing parent); 0 = unknown
+bool ReadBinary(const std::string& path, std::string& out);
+bool WriteBinary(const std::string& path, const std::string& data);
+bool MoveFileReplace(const std::string& from, const std::string& to);   // rename; works on a running exe
+bool DeleteFileAt(const std::string& path);
+void MakeDir(const std::string& dir);
+std::vector<std::string> ListFilesRecursive(const std::string& dir);
+// Starts the client's exe again with these arguments (after an update), without waiting.
+bool Relaunch(const std::string& args);
 
 // The installed port
 static const char kGameExe[] = "Tekken Tag Tournament 2.exe";

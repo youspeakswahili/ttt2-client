@@ -21,6 +21,18 @@ This project is not affiliated with Bandai Namco or with the port's author.
 Grab the latest zip from [Releases](../../releases), extract it, run `TTT2 Client.exe`.
 Windows SmartScreen may warn the first time (the exe is not code-signed): **More info → Run anyway**.
 
+## Updates
+
+The client checks this repository's latest release when it starts and offers to update itself. Every release zip
+carries `manifest.txt` (each file's SHA-512) and `manifest.sig` (an Ed25519 signature by the project's release key);
+the client installs nothing that is not signed by that key and unchanged. Making a release:
+
+```
+go run ./tools/release -key <path to release-signing.key> -dir "pkg/TTT2 Client" -version 0.1.8 -out TTT2-Client-0.1.8.zip
+```
+
+Bump `client/version.h` first, tag the release `v0.1.8`, attach the zip. The private key never goes in this repository.
+
 ## What's in here
 
 | Folder | What |
@@ -31,7 +43,8 @@ Windows SmartScreen may warn the first time (the exe is not code-signed): **More
 | `server/` | `ttt2d`, the matchmaking and relay server (Go, standard library only). See `server/PROTOCOL.md` |
 | `tests/`, `server/*_test.go` | Tests |
 | `art/` | The logo, drawn with Python (Pillow + NumPy) |
-| `licenses/` | Third-party licenses (SDL3, Dear ImGui, Inter, Barlow Condensed) |
+| `tools/release/` | Signs and zips a release |
+| `licenses/` | Third-party licenses (SDL3, Dear ImGui, Inter, Barlow Condensed, Monocypher, miniz) |
 
 ## Building
 

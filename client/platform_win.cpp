@@ -121,6 +121,70 @@ uint64_t FreeBytes(const std::string& dir)
     return 0;
 }
 
+bool ReadBinary(const std::string& path, std::string& out)
+{
+    HANDLE f = CreateFileW(W(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    out.clear();
+    char buf[65536];
+    DWORD got = 0;
+    while (ReadFile(f, buf, sizeof buf, &got, nullptr) && got) out.append(buf, got);
+    CloseHandle(f);
+    return true;
+}
+bool WriteBinary(const std::string& path, const std::string& data)
+{
+    HANDLE f = CreateFileW(W(path).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD put = 0;
+    const bool ok = WriteFile(f, data.data(), DWORD(data.size()), &put, nullptr) && put == data.size() && FlushFileBuffers(f);
+    CloseHandle(f);
+    return ok;
+}
+bool MoveFileReplace(const std::string& from, const std::string& to)
+{
+    return MoveFileExW(W(from).c_str(), W(to).c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+}
+bool DeleteFileAt(const std::string& path) { return DeleteFileW(W(path).c_str()) != 0; }
+void MakeDir(const std::string& dir) { MakeDirs(dir); }
+std::vector<std::string> ListFilesRecursive(const std::string& dir)
+{
+    std::vector<std::string> out;
+    std::vector<std::string> todo{ dir };
+    while (!todo.empty()) {
+        const std::string d = todo.back();
+        todo.pop_back();
+        WIN32_FIND_DATAW fd{};
+        HANDLE h = FindFirstFileW(W(JoinPath(d, "*")).c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            const std::wstring n = fd.cFileName;
+            if (n == L"." || n == L"..") continue;
+            const std::string full = JoinPath(d, U(n));
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && todo.size() < 64) todo.push_back(full);
+            } else {
+                out.push_back(full);
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    return out;
+}
+bool Relaunch(const std::string& args)
+{
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring cmd = L"\"" + std::wstring(exe) + L"\" " + W(args);
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, W(ExeDir()).c_str(), &si, &pi)) return false;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+
 bool LooksLikeInstall(const std::string& dir)
 {
     return !dir.empty() && FileExists(JoinPath(dir, kGameExe)) && FileExists(JoinPath(dir, "game\\tekken.img"));
