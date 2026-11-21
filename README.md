@@ -10,8 +10,12 @@ A launcher for the [Tekken Tag Tournament 2 PC port](https://github.com/shihabal
 - **Settings**: the game's input delay, low latency, netcode and display settings, plus full screen for the client.
 - **Play**: launch the game, ready check.
 
-Coming next: matchmaking from the client (ranked and casual queues, hard side lock, practice while you wait),
-through our own server instead of Steam.
+- **Online**: an account on the TTT2 server (no email or password), ranked and casual queues with a guaranteed
+  side (1P / 2P / either) and a ping limit, a connection check between the two PCs (hole punching, relay
+  fallback), ratings and a leaderboard.
+
+Coming next: the game starting straight into a found match (and practice while you wait), over our own
+connection instead of Steam.
 
 **No game files are included or downloaded by this project.** You need your own copy of the game.
 This project is not affiliated with Bandai Namco or with the port's author.

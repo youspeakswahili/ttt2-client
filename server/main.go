@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 // loadOrMakeCert keeps one self-signed certificate in the data folder. Clients pin its fingerprint,
 // so it must survive restarts and updates (back up cert.pem and key.pem with players.json).

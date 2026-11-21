@@ -272,6 +272,8 @@ func (l *Lobby) handle(s *Session, m *inMsg) {
 		l.onResult(s, m)
 	case "leaderboard":
 		s.Send(map[string]any{"t": "leaderboard", "rows": l.store.Leaderboard(100)})
+	case "leave":
+		l.onLeave(s, m)
 	}
 }
 
@@ -502,6 +504,30 @@ func (l *Lobby) cancel(m *Match, reason string, drop int) {
 		s.queue = &e
 		l.queue = append(l.queue, s.queue)
 		s.Send(map[string]any{"t": "queued", "mode": e.mode, "side": e.side})
+	}
+}
+
+// onLeave: a player backs out of a found match. In a proposal the other player goes back to the queue; in a match it
+// counts as leaving (forfeit if the other reports a win, abandoned if both leave), at once instead of after 2 minutes.
+func (l *Lobby) onLeave(s *Session, msg *inMsg) {
+	m := s.match
+	if m == nil || m.id != msg.Match {
+		return
+	}
+	slot := m.slotOf(s.player)
+	switch m.state {
+	case "proposal":
+		m.sessions[slot] = nil
+		s.match = nil
+		l.cancel(m, "opponent_left", slot)
+	case "playing":
+		m.sessions[slot] = nil
+		s.match = nil
+		m.left[slot] = time.Now().Add(-forfeitAfter - time.Second)
+		if other := m.sessions[1-slot]; other != nil {
+			other.Send(map[string]any{"t": "left", "match": m.id})
+		}
+		l.checkForfeit(m, time.Now())
 	}
 }
 

@@ -3,10 +3,12 @@
 #include "app.h"
 #include "builder.h"
 #include "updater.h"
+#include "online.h"
 #include "version.h"
 #include "ini.h"
 #include "platform.h"
 #include "../common/input_config.h"
+#include "net.h"
 
 #include <SDL3/SDL.h>
 #include "imgui.h"
@@ -17,6 +19,7 @@
 #include <cstdio>
 #include <map>
 #include <mutex>
+#include <cstring>
 
 using namespace ttt2;
 
@@ -258,7 +261,7 @@ bool SourceHeld(SDL_Joystick* j, const Source& s, int deadzone)
 // ---------------------------------------------------------------- the app
 struct App::Impl {
     SDL_Window* window = nullptr;
-    enum Page { PLAY, CONTROLS, SETTINGS, INSTALL, PAGE_COUNT } page = PLAY;
+    enum Page { PLAY, ONLINE, CONTROLS, SETTINGS, INSTALL, PAGE_COUNT } page = PLAY;
 
     // client settings
     IniFile client;
@@ -291,6 +294,34 @@ struct App::Impl {
     bool gameLoaded = false;
     std::string settingsNote;
     double settingsNoteAt = -10;
+
+    // online play (ttt2d)
+    std::unique_ptr<Online> online;
+    int qMode = 0, qSide = 0, qPing = 2;   // ranked/casual, any/1P/2P, max ping choice
+    char nameBuf[32] = {};
+    double lastBoard = -100;
+    static constexpr int kPings[5] = { 60, 90, 120, 150, 200 };
+    void StartOnline()
+    {
+        if (online) return;
+        ServerConfig cfg;
+        cfg.host = client.Get("server", "host", cfg.host);
+        cfg.port = client.GetInt("server", "port", cfg.port);
+        cfg.fingerprint = client.Get("server", "fingerprint", cfg.fingerprint);
+        online = std::make_unique<Online>(cfg, plat::ClientDataDir());
+        online->clientVersion = TTT2_CLIENT_VERSION;
+        online->Start();
+        qMode = std::clamp(client.GetInt("online", "mode", 0), 0, 1);
+        qSide = std::clamp(client.GetInt("online", "side", 0), 0, 2);
+        qPing = std::clamp(client.GetInt("online", "ping", 2), 0, 4);
+    }
+    void SaveQueuePrefs()
+    {
+        client.SetInt("online", "mode", qMode);
+        client.SetInt("online", "side", qSide);
+        client.SetInt("online", "ping", qPing);
+        SaveClient();
+    }
 
     // the client's own updates
     Updater updater;
@@ -347,6 +378,7 @@ struct App::Impl {
         CheckLayer();
         Updater::CleanUpOldFiles();
         updater.Check();
+        if (!std::getenv("TTT2_NO_ONLINE")) StartOnline();
     }
     void SaveClient()
     {
@@ -608,6 +640,7 @@ struct App::Impl {
     void Sidebar(float w, float h);
     void Header(const char* title, const char* subtitle);
     void PagePlay();
+    void PageOnline();
     void PageControls();
     void PageSettings();
     void PageInstall();
@@ -631,7 +664,7 @@ void App::Impl::Sidebar(float w, float h)
     ImGui::PopFont();
 
     ImGui::SetCursorPos({ 0, 104 });
-    static const char* names[] = { "PLAY", "CONTROLS", "SETTINGS", "INSTALL" };
+    static const char* names[] = { "PLAY", "ONLINE", "CONTROLS", "SETTINGS", "INSTALL" };
     for (int i = 0; i < PAGE_COUNT; ++i) {
         ImGui::PushID(i);
         const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -761,20 +794,187 @@ void App::Impl::PagePlay()
     ImGui::SameLine(0, 18);
     ImGui::BeginChild("onlinecol", { half, 0 }, ImGuiChildFlags_AutoResizeY);
     BeginCard("onlinecard", 0, "Online");
-    ImGui::PushFont(F.body, 14.f);
-    Wrapped(col::dim, "Ranked and player matches run inside the game for now, with the port's rollback netcode over Steam. "
-                      "Keep Steam running and open ONLINE MODE in the game.");
-    ImGui::PopFont();
-    ImGui::Dummy({ 0, 8 });
-    Text(F.bold, 12.f, col::faint, "NEXT IN THE CLIENT");
-    ImGui::Dummy({ 0, 2 });
-    for (const char* s : { "Ranked and casual queues from here", "Practice while you wait for a match", "Leaderboards and match history" }) {
-        ImGui::Bullet();
-        ImGui::SameLine();
-        Text(F.body, 14.f, col::text, s);
+    {
+        const Online::View ov = online ? online->Snapshot() : Online::View{};
+        ImGui::PushFont(F.body, 14.f);
+        if (ov.state == Online::LOBBY || ov.state == Online::QUEUED || ov.state == Online::CHECKING || ov.state == Online::READY) {
+            char t[160];
+            std::snprintf(t, sizeof t, "Signed in as %s  ·  rating %d  ·  %d online now", ov.name.c_str(), ov.rating, ov.online);
+            Wrapped(col::text, t);
+        } else if (ov.state == Online::NEED_NAME) {
+            Wrapped(col::dim, "Pick your fighter name on the ONLINE page to play ranked and casual matches.");
+        } else {
+            Wrapped(col::dim, ov.error.empty() ? "Connecting to the server..." : ov.error.c_str());
+        }
+        ImGui::PopFont();
+        ImGui::Dummy({ 0, 8 });
+        if (Button("Go online", { 140, 32 })) page = ONLINE;
     }
     EndCard();
     ImGui::EndChild();
+}
+
+void App::Impl::PageOnline()
+{
+    Header("ONLINE", "Ranked and casual matches against players on the TTT2 server, on the side you choose.");
+    if (!online) StartOnline();
+    const Online::View v = online->Snapshot();
+    const double now = SDL_GetTicks() / 1000.0;
+
+    if (!v.notice.empty()) {
+        ImGui::PushFont(F.bold, 14.f);
+        Wrapped(col::amber, v.notice.c_str());
+        ImGui::PopFont();
+        ImGui::Dummy({ 0, 6 });
+    }
+
+    if (v.state == Online::NEED_NAME) {
+        BeginCard("name", 0, "Pick your fighter name");
+        ImGui::PushFont(F.body, 14.f);
+        Wrapped(col::dim, "This is your name on the server and the leaderboard: 3 to 16 letters, digits, _ or -. "
+                          "Your account is saved on this PC; no email or password needed.");
+        ImGui::PopFont();
+        if (!v.error.empty()) { ImGui::Dummy({ 0, 4 }); Text(F.bold, 14.f, col::red, v.error.c_str()); }
+        ImGui::Dummy({ 0, 8 });
+        ImGui::SetNextItemWidth(320);
+        ImGui::PushFont(F.bold, 16.f);
+        const bool enter = ImGui::InputText("##name", nameBuf, sizeof nameBuf, ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::PopFont();
+        ImGui::SameLine(0, 12);
+        const bool okLen = std::strlen(nameBuf) >= 3;
+        if ((BigButton("CREATE", { 160, 40 }, okLen) || (enter && okLen))) online->Register(nameBuf);
+        EndCard();
+        return;
+    }
+    if (v.state == Online::CONNECTING || v.state == Online::OFFLINE || v.state == Online::FAILED) {
+        BeginCard("conn", 0, v.state == Online::FAILED ? "Can't reach the server" : "Connecting");
+        ImGui::PushFont(F.body, 14.f);
+        Wrapped(v.state == Online::FAILED ? col::red : col::dim, v.state == Online::FAILED ? (v.error + " Trying again shortly.").c_str() : "Connecting to the TTT2 server...");
+        ImGui::PopFont();
+        EndCard();
+        return;
+    }
+
+    if (now - lastBoard > 60 && v.state == Online::LOBBY) { online->RequestBoard(); lastBoard = now; }
+
+    // you + the server
+    const float half = (ImGui::GetContentRegionAvail().x - 18) * 0.5f;
+    ImGui::BeginChild("me", { half, 0 }, ImGuiChildFlags_AutoResizeY);
+    BeginCard("mecard");
+    Text(F.heavy, 34.f, col::text, v.name.c_str());
+    char t[160];
+    std::snprintf(t, sizeof t, "Rating %d   ·   %d wins, %d losses", v.rating, v.wins, v.games - v.wins);
+    Text(F.bold, 15.f, col::gold, t);
+    if (!v.lastOutcome.empty()) {
+        std::snprintf(t, sizeof t, "Last ranked match: %+d", v.lastChange);
+        Text(F.body, 13.f, v.lastChange >= 0 ? col::green : col::red, t);
+    }
+    EndCard();
+    ImGui::EndChild();
+    ImGui::SameLine(0, 18);
+    ImGui::BeginChild("srv", { half, 0 }, ImGuiChildFlags_AutoResizeY);
+    BeginCard("srvcard");
+    Text(F.display, 20.f, col::text, "Server");
+    std::snprintf(t, sizeof t, "%d online   ·   %d searching   ·   %d in matches", v.online, v.queued, v.playing);
+    Text(F.body, 14.f, col::dim, t);
+    EndCard();
+    ImGui::EndChild();
+    ImGui::Dummy({ 0, 12 });
+
+    if (v.state == Online::LOBBY) {
+        BeginCard("queue", 0, "Find a match");
+        static const char* modes[] = { "Ranked", "Casual" };
+        static const char* sides[] = { "Either side", "1P (left)", "2P (right)" };
+        static const char* pings[] = { "60 ms", "90 ms", "120 ms", "150 ms", "200 ms" };
+        const float ctl = 420;
+        RowLabel("Mode", "Ranked changes your rating. Casual doesn't.", ctl);
+        if (Segmented("mode", &qMode, modes, 2, ctl)) SaveQueuePrefs();
+        Divider();
+        RowLabel("Side", "A locked side is guaranteed: you are never matched with someone who locked the same side.", ctl);
+        if (Segmented("side", &qSide, sides, 3, ctl)) SaveQueuePrefs();
+        Divider();
+        RowLabel("Max ping", "Only opponents your PC can reach within this. Lower = better connections, longer waits.", ctl);
+        if (Segmented("ping", &qPing, pings, 5, ctl)) SaveQueuePrefs();
+        ImGui::Dummy({ 0, 10 });
+        if (BigButton("FIND MATCH", { 280, 52 })) {
+            static const char* m[] = { "ranked", "casual" };
+            static const char* sd[] = { "any", "p1", "p2" };
+            online->Queue(m[qMode], sd[qSide], kPings[qPing]);
+        }
+        EndCard();
+    } else if (v.state == Online::QUEUED) {
+        BeginCard("searching");
+        const int secs = int((net::NowMs() - v.queueSinceMs) / 1000);
+        std::snprintf(t, sizeof t, "SEARCHING%s", std::string(size_t(int(now * 2) % 4), '.').c_str());
+        Text(F.heavy, 40.f, col::text, t);
+        const char* side = v.queueSide == "p1" ? "1P side" : v.queueSide == "p2" ? "2P side" : "either side";
+        std::snprintf(t, sizeof t, "%s  ·  %s  ·  %d:%02d", v.queueMode == "ranked" ? "Ranked" : "Casual", side, secs / 60, secs % 60);
+        Text(F.bold, 15.f, col::gold, t);
+        ImGui::Dummy({ 0, 10 });
+        if (Button("Cancel", { 140, 34 })) online->Cancel();
+        ImGui::Dummy({ 0, 6 });
+        ImGui::PushFont(F.body, 13.f);
+        Wrapped(col::faint, "Practice while you wait arrives together with starting the game straight into matches.");
+        ImGui::PopFont();
+        EndCard();
+    } else if (v.state == Online::CHECKING || v.state == Online::READY) {
+        BeginCard("found");
+        Text(F.heavy, 40.f, col::text, v.state == Online::READY ? "MATCH READY" : "MATCH FOUND");
+        std::snprintf(t, sizeof t, "vs %s (%d)   ·   you are %s", v.match.opponent.c_str(), v.match.opponentRating, v.match.side == "p1" ? "1P (left)" : "2P (right)");
+        Text(F.bold, 16.f, col::gold, t);
+        ImGui::Dummy({ 0, 4 });
+        if (v.state == Online::CHECKING) {
+            Text(F.body, 14.f, col::dim, v.checkStage.c_str());
+        } else {
+            std::snprintf(t, sizeof t, "Connection: %d ms, %s", v.match.rtt, v.match.direct ? "direct" : "through the relay");
+            Text(F.body, 14.f, col::green, t);
+            ImGui::Dummy({ 0, 6 });
+            ImGui::PushFont(F.body, 13.f);
+            Wrapped(col::dim, "Starting the game straight into this match is the next update. For now this shows the two of you can "
+                              "connect and how good that connection is.");
+            ImGui::PopFont();
+        }
+        ImGui::Dummy({ 0, 10 });
+        if (Button(v.state == Online::READY ? "Back to lobby" : "Leave", { 150, 34 })) online->Leave();
+        EndCard();
+    }
+
+    if (!v.board.empty()) {
+        ImGui::Dummy({ 0, 12 });
+        BeginCard("board", 0, "Leaderboard");
+        if (ImGui::BeginTable("lb", 4, ImGuiTableFlags_RowBg)) {
+            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 40);
+            ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("rating", ImGuiTableColumnFlags_WidthFixed, 80);
+            ImGui::TableSetupColumn("record", ImGuiTableColumnFlags_WidthFixed, 110);
+            ImGui::PushStyleColor(ImGuiCol_TableRowBg, V(0));
+            ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt, V(Alpha(col::text, 0.025f)));
+            for (size_t i = 0; i < v.board.size() && i < 20; ++i) {
+                const BoardRow& r = v.board[i];
+                const bool me = r.name == v.name;
+                ImGui::TableNextRow(0, 28);
+                ImGui::TableNextColumn();
+                std::snprintf(t, sizeof t, "%d", r.rank);
+                Text(F.heavy, 18.f, r.rank <= 3 ? col::gold : col::dim, t);
+                ImGui::TableNextColumn();
+                Text(F.bold, 14.f, me ? col::gold : col::text, r.name.c_str());
+                ImGui::TableNextColumn();
+                std::snprintf(t, sizeof t, "%d", r.rating);
+                Text(F.bold, 14.f, col::text, t);
+                ImGui::TableNextColumn();
+                std::snprintf(t, sizeof t, "%d-%d", r.wins, r.games - r.wins);
+                Text(F.body, 13.f, col::dim, t);
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::EndTable();
+        }
+        EndCard();
+    } else if (v.state == Online::LOBBY) {
+        ImGui::Dummy({ 0, 12 });
+        BeginCard("board0", 0, "Leaderboard");
+        Text(F.body, 13.5f, col::faint, "Players show up here after 5 ranked matches.");
+        EndCard();
+    }
 }
 
 void App::Impl::Visualizer(Device* dv, float height)
@@ -1316,6 +1516,7 @@ void App::Impl::Frame()
     UpdateBanner();
     switch (page) {
     case PLAY: Header("PLAY", "Your game, your controller, ready to fight."); PagePlay(); break;
+    case ONLINE: PageOnline(); break;
     case CONTROLS: PageControls(); break;
     case SETTINGS: PageSettings(); break;
     case INSTALL: PageInstall(); break;

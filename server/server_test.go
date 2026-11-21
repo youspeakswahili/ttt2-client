@@ -426,3 +426,33 @@ func TestRatingWindowWidens(t *testing.T) {
 		t.Fatalf("elo minimum: %d", g)
 	}
 }
+
+func TestLeave(t *testing.T) {
+	lobby, addr := newTestServer(t)
+	a := register(t, addr, "LeaveA")
+	b := register(t, addr, "LeaveB")
+	a.send(map[string]any{"t": "queue", "mode": "casual"})
+	a.next("queued")
+	b.send(map[string]any{"t": "queue", "mode": "casual"})
+	b.next("queued")
+	lobby.Tick(time.Now())
+	match := a.next("proposal")["match"].(string)
+	b.next("proposal")
+	a.send(map[string]any{"t": "check", "match": match, "ok": true, "rtt": 30})
+	b.send(map[string]any{"t": "check", "match": match, "ok": true, "rtt": 30})
+	a.next("go")
+	b.next("go")
+	a.send(map[string]any{"t": "leave", "match": match})
+	b.next("left")
+	b.send(map[string]any{"t": "leave", "match": match})
+	time.Sleep(100 * time.Millisecond)
+	lobby.mu.Lock()
+	n := len(lobby.matches)
+	lobby.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d matches left open", n)
+	}
+	// both can queue again
+	a.send(map[string]any{"t": "queue", "mode": "casual"})
+	a.next("queued")
+}

@@ -27,6 +27,7 @@ Names: 3 to 16 characters, `A-Z a-z 0-9 _ -`, unique ignoring case.
 {"t":"cancel"}
 {"t":"check","match":"<id>","ok":true,"rtt":38,"direct":true}
 {"t":"result","match":"<id>","winner":"me"|"opponent"}
+{"t":"leave","match":"<id>"}
 {"t":"leaderboard"}
 {"t":"ping"}
 ```
@@ -47,6 +48,7 @@ Names: 3 to 16 characters, `A-Z a-z 0-9 _ -`, unique ignoring case.
 {"t":"go","match":"<id>","side":"p1"|"p2","direct":true,"seed":123456789}
 {"t":"cancelled","match":"<id>","reason":"opponent_left"|"too_far"|"check_failed"|"timeout"}
 {"t":"rated","match":"<id>","rating":1516,"change":16,"games":1,"wins":1}
+{"t":"left","match":"<id>"}                       (the opponent left the match)
 {"t":"leaderboard","rows":[{"rank":1,"name":"X","rating":1700,"games":40,"wins":30}]}
 {"t":"pong"}
 ```

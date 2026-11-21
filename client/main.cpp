@@ -85,7 +85,8 @@ int main(int argc, char** argv)
         SDL_SetRenderDrawColor(renderer, 9, 9, 12, 255);
         SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
-        if (shotFile && ++frames == 6) {
+        static const int shotFrames = std::getenv("TTT2_SHOT_FRAMES") ? std::atoi(std::getenv("TTT2_SHOT_FRAMES")) : 6;
+        if (shotFile && ++frames == shotFrames) {
             if (SDL_Surface* s = SDL_RenderReadPixels(renderer, nullptr)) { SDL_SaveBMP(s, shotFile); SDL_DestroySurface(s); }
             running = false;
         }
