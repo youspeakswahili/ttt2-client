@@ -686,7 +686,7 @@ void App::Impl::Sidebar(float w, float h)
 
     // tip jar (opens the Ko-fi page in the browser)
     if (kSupportUrl[0]) {
-        ImGui::SetCursorPos({ 20, h - 214 });
+        ImGui::SetCursorPos({ 20, h - 260 });
         const ImVec2 sp = ImGui::GetCursorScreenPos();
         const ImVec2 ss = { w - 40, 42 };
         if (ImGui::InvisibleButton("support", ss)) plat::OpenUrl(kSupportUrl);
@@ -704,7 +704,7 @@ void App::Impl::Sidebar(float w, float h)
     }
 
     // bottom: status
-    ImGui::SetCursorPos({ 24, h - 150 });
+    ImGui::SetCursorPos({ 24, h - 196 });
     ImGui::BeginGroup();
     Text(F.bold, 11.5f, col::faint, "GAME");
     Text(F.bold, 14.f, installed ? col::text : col::amber, installed ? (gameRunning ? "Running" : "Installed") : "Not installed");
@@ -715,6 +715,26 @@ void App::Impl::Sidebar(float w, float h)
     Text(F.bold, 14.f, devices.empty() && !devicesSuspended ? col::dim : col::text, t);
     ImGui::Dummy({ 0, 6 });
     Text(F.body, 11.5f, col::faint, "LB / RB  change page");
+    ImGui::EndGroup();
+
+    // the client's version and its update check, always in view
+    ImGui::SetCursorPos({ 24, h - 52 });
+    ImGui::BeginGroup();
+    {
+        const Updater::State st = updater.GetState();
+        std::string v = std::string("Client ") + TTT2_CLIENT_VERSION;
+        ImU32 c = col::faint;
+        if (st == Updater::UP_TO_DATE) v += "  ·  up to date";
+        else if (st == Updater::CHECKING) v += "  ·  checking...";
+        else if (st == Updater::AVAILABLE || st == Updater::DOWNLOADING || st == Updater::READY) { v += "  ·  " + updater.Latest() + " ready"; c = col::gold; }
+        else if (st == Updater::FAILED) { v += "  ·  check failed"; c = col::amber; }
+        Text(F.bold, 11.5f, c, v.c_str());
+        ImGui::PushStyleColor(ImGuiCol_Text, V(col::gold));
+        ImGui::PushFont(F.bold, 12.f);
+        if (st != Updater::CHECKING && st != Updater::DOWNLOADING && ImGui::SmallButton("Check for updates")) updater.Check();
+        ImGui::PopFont();
+        ImGui::PopStyleColor();
+    }
     ImGui::EndGroup();
 }
 
