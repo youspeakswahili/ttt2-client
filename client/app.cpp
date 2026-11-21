@@ -1330,10 +1330,20 @@ void App::Impl::PageInstall()
         BeginCard("current", 0, "Installed");
         Text(F.bold, 15.f, col::text, installDir.c_str());
         std::string v = "Port version " + (installedVersion.empty() ? std::string("unknown") : installedVersion);
-        const std::string latest = builder.LatestTag();
-        if (!latest.empty()) v += "  ·  latest " + latest;
         Text(F.body, 13.5f, col::dim, v.c_str());
-        if (!builder.CheckError().empty()) Text(F.body, 13.f, col::red, builder.CheckError().c_str());
+        // the result of "Check port updates", in words
+        const std::string latest = builder.LatestTag();
+        if (builder.Checking()) {
+            Text(F.bold, 14.f, col::dim, "Checking the port's GitHub page...");
+        } else if (!builder.CheckError().empty()) {
+            Text(F.bold, 14.f, col::red, ("Could not check: " + builder.CheckError()).c_str());
+        } else if (!latest.empty()) {
+            const std::string bare = latest[0] == 'v' ? latest.substr(1) : latest;
+            if (!installedVersion.empty() && !Updater::Newer(bare, installedVersion))
+                Text(F.bold, 14.f, col::green, ("You have the latest port (" + latest + ").").c_str());
+            else
+                Text(F.bold, 14.f, col::amber, ("Port " + latest + " is out. Press REBUILD below to update (it needs your disc image and Title Update 3 again).").c_str());
+        }
         ImGui::Dummy({ 0, 6 });
         if (Button(layerInstalled ? "Reinstall controller layer" : "Install controller layer", { 220, 32 }, !busy && !gameRunning)) {
             BuildRequest r;
