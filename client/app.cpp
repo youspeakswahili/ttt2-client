@@ -245,6 +245,23 @@ PadFamily FamilyOf(SDL_Gamepad* pad)
     default: return FAM_XBOX;   // SDL's standard layout is Xbox-shaped
     }
 }
+// A controller SDL does not know as a gamepad, by its maker: most fight sticks and licensed pads (Victrix, Hori, Razer,
+// Qanba, Mad Catz, Nacon, Brook) are PlayStation ones and use the PlayStation layout GenericMap assumes.
+PadFamily FamilyOfVendor(uint16_t vendor)
+{
+    switch (vendor) {
+    case 0x054C: case 0x0E6F: case 0x0F0D: case 0x1532: case 0x2C22: case 0x0738: case 0x146B: case 0x0C12: return FAM_PLAYSTATION;
+    case 0x045E: return FAM_XBOX;
+    case 0x057E: return FAM_NINTENDO;
+    default: return FAM_OTHER;
+    }
+}
+
+PadFamily DeviceFamily(const Device& d)
+{
+    return d.pad ? FamilyOf(d.pad) : FamilyOfVendor(d.joy ? SDL_GetJoystickVendor(d.joy) : 0);
+}
+
 // The output's physical button on that controller family (by position: west, north, south, east)
 const char* PadButtonName(PadFamily f, int out)
 {
@@ -329,6 +346,8 @@ struct App::Impl {
     void TickMatch();
     int qMode = 0, qSide = 0, qPing = 2;   // ranked/casual, any/1P/2P, max ping choice
     char nameBuf[32] = {};
+    bool renamingOpen = false;
+    char renameBuf[32] = {};
     double lastBoard = -100;
     static constexpr int kPings[5] = { 60, 90, 120, 150, 200 };
     void StartOnline()
@@ -911,7 +930,27 @@ void App::Impl::PageOnline()
     const float half = (ImGui::GetContentRegionAvail().x - 18) * 0.5f;
     ImGui::BeginChild("me", { half, 0 }, ImGuiChildFlags_AutoResizeY);
     BeginCard("mecard");
-    Text(F.heavy, 34.f, col::text, v.name.c_str());
+    if (!renamingOpen) {
+        Text(F.heavy, 34.f, col::text, v.name.c_str());
+        ImGui::SameLine(0, 12);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8);
+        if (Button("Change name", { 120, 28 }, v.state == Online::LOBBY)) {
+            renamingOpen = true;
+            std::snprintf(renameBuf, sizeof renameBuf, "%s", v.name.c_str());
+        }
+    } else {
+        ImGui::SetNextItemWidth(220);
+        const bool enter = ImGui::InputText("##rename", renameBuf, sizeof renameBuf, ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine(0, 8);
+        if (Button("Save", { 80, 30 }, std::strlen(renameBuf) >= 3) || (enter && std::strlen(renameBuf) >= 3)) {
+            online->Rename(renameBuf);
+            renamingOpen = false;
+        }
+        ImGui::SameLine(0, 8);
+        if (Button("Cancel", { 80, 30 })) renamingOpen = false;
+        Text(F.body, 12.5f, col::faint, "3-16 letters, digits, - or _. Your rating and record stay.");
+    }
+    if (!v.error.empty() && v.state == Online::LOBBY) Text(F.body, 13.f, col::red, v.error.c_str());
     char t[160];
     std::snprintf(t, sizeof t, "Rating %d   ·   %d wins, %d losses", v.rating, v.wins, v.games - v.wins);
     Text(F.bold, 15.f, col::gold, t);
@@ -1141,8 +1180,10 @@ void App::Impl::PageControls()
         ImGui::PushFont(F.body, 12.f);
         const bool custom = input.Find(dvc.guid) != nullptr;
         {
-            const PadFamily fam = FamilyOf(dvc.pad);
-            const char* kind = !dvc.pad ? "Stick / generic layout" : fam == FAM_PLAYSTATION ? "PlayStation layout" : fam == FAM_NINTENDO ? "Nintendo layout" : "Xbox layout";
+            const PadFamily fam = DeviceFamily(dvc);
+            char other[96];
+            std::snprintf(other, sizeof other, "Unknown layout (%04x:%04x): set its buttons below", SDL_GetJoystickVendor(dvc.joy), SDL_GetJoystickProduct(dvc.joy));
+            const char* kind = fam == FAM_PLAYSTATION ? "PlayStation layout" : fam == FAM_NINTENDO ? "Nintendo layout" : fam == FAM_XBOX ? "Xbox layout" : other;
             d->AddText({ p.x + 12, p.y + 30 }, custom ? col::gold : col::dim, custom ? "Custom map" : kind);
         }
         ImGui::PopFont();
@@ -1237,8 +1278,8 @@ void App::Impl::PageControls()
                 std::string s;
                 for (auto& src : m->out[row.out]) s += (s.empty() ? "" : "  +  ") + SourceName(src);
                 Text(custom ? F.bold : F.body, 13.5f, s.empty() ? col::faint : col::text, s.empty() ? "Not set" : s.c_str());
-            } else if (dv && dv->pad && row.out < O_M12) {
-                Text(F.body, 13.5f, col::text, PadButtonName(FamilyOf(dv->pad), row.out));
+            } else if (dv && row.out < O_M12 && DeviceFamily(*dv) != FAM_OTHER) {
+                Text(F.body, 13.5f, col::text, PadButtonName(DeviceFamily(*dv), row.out));
             } else {
                 Text(F.body, 13.5f, dv ? col::text : col::faint, dv ? DefaultBinding(row.out) : "-");
             }
@@ -1286,6 +1327,12 @@ void App::Impl::PageSettings()
         ImGui::PushID("clientfs");
         if (Segmented("fs", &v, fs, 2, ctl)) SetFullscreen(v == 1);
         ImGui::PopID();
+        Divider();
+        RowLabel("Game volume", "Kept here and set as the game starts (Windows does not remember this game's volume).", ctl);
+        int vol = client.GetInt("client", "volume", 100);
+        ImGui::SetNextItemWidth(ctl);
+        if (ImGui::SliderInt("##vol", &vol, 0, 100, "%d%%")) client.Set("client", "volume", std::to_string(vol));
+        if (ImGui::IsItemDeactivatedAfterEdit()) SaveClient();
     }
     EndCard();
     ImGui::Dummy({ 0, 12 });
@@ -1522,7 +1569,8 @@ bool App::Impl::StartMatch(const MatchInfo& m)
                       "\ntoken=" + m.relayToken + "\nlocalport=" + std::to_string(port) + "\ndirect=" + (m.direct ? "1" : "0") + "\n";
     if (!plat::WriteText(file, ini)) { online->ReclaimUdp(); matchNote = "Could not write the match file."; return false; }
     matchProc = plat::LaunchWithEnv(installDir, plat::kOnlineExe,
-                                    { { "TTT2_NET", "ttt2net" }, { "TTT2_MATCH", file }, { "TTT2_ROLLBACK", "1" } }, err);
+                                    { { "TTT2_NET", "ttt2net" }, { "TTT2_MATCH", file }, { "TTT2_ROLLBACK", "1" },
+                                      { "TTT2_MASTER_VOLUME", std::to_string(client.GetInt("client", "volume", 100)) } }, err);
     if (!matchProc) { online->ReclaimUdp(); matchNote = "Could not start the game: " + err; return false; }
     gameRunning = true;
     matchNote.clear();

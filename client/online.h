@@ -64,6 +64,7 @@ public:
     View Snapshot() const;
 
     void Register(const std::string& name);
+    void Rename(const std::string& name);       // the account keeps its rating; View::notice / error say how it went
     void Queue(const std::string& mode, const std::string& side, int maxPing);
     void Cancel();
     void Leave();                       // back to the lobby from a found match

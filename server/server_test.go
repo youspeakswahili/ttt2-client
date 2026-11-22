@@ -456,3 +456,27 @@ func TestLeave(t *testing.T) {
 	a.send(map[string]any{"t": "queue", "mode": "casual"})
 	a.next("queued")
 }
+
+func TestRename(t *testing.T) {
+	st, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _, _ := st.Register("alpha")
+	b, _, _ := st.Register("bravo")
+	if err := st.Rename(a, "Bravo"); err != errNameTaken {
+		t.Fatalf("taken name: %v", err)
+	}
+	if err := st.Rename(a, "x"); err != errBadName {
+		t.Fatalf("bad name: %v", err)
+	}
+	if err := st.Rename(a, "Alpha2"); err != nil || a.Name != "Alpha2" {
+		t.Fatalf("rename: %v %s", err, a.Name)
+	}
+	if _, _, err := st.Register("alpha"); err != nil {
+		t.Fatalf("old name should be free: %v", err)
+	}
+	if err := st.Rename(b, "BRAVO"); err != nil {
+		t.Fatalf("own name, other case: %v", err)
+	}
+}

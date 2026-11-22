@@ -93,6 +93,17 @@ int main(int argc, char** argv)
 
     a.Report(true);
     b.Report(false);
+    // a new name (taken: the opponent's), then a free one
+    {
+        const std::string other = vb.name;
+        a.Rename(other);
+        for (int i = 0; i < 100 && a.Snapshot().error.empty(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        assert(!a.Snapshot().error.empty());
+        a.Rename("Renamed_" + std::to_string(std::rand() % 1000));
+        for (int i = 0; i < 100 && a.Snapshot().name.rfind("Renamed_", 0) != 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        assert(a.Snapshot().name.rfind("Renamed_", 0) == 0);
+        std::printf("renamed to %s\n", a.Snapshot().name.c_str());
+    }
     assert(WaitFor(a, Online::LOBBY, 5000, "a"));
     assert(WaitFor(b, Online::LOBBY, 5000, "b"));
     std::this_thread::sleep_for(std::chrono::milliseconds(300));

@@ -117,6 +117,23 @@ func (s *Store) Register(name string) (*Player, string, error) {
 	return p, token, nil
 }
 
+// Rename gives a player a new name (the same rules as a new one; their own name in other letter case is allowed).
+func (s *Store) Rename(p *Player, name string) error {
+	if !nameRe.MatchString(name) {
+		return errBadName
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if other, taken := s.byName[strings.ToLower(name)]; taken && other != p {
+		return errNameTaken
+	}
+	delete(s.byName, strings.ToLower(p.Name))
+	p.Name = name
+	s.byName[strings.ToLower(name)] = p
+	s.dirty = true
+	return nil
+}
+
 func (s *Store) Login(token string) (*Player, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

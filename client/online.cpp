@@ -39,6 +39,7 @@ struct Online::Impl {
     int udpPort = 27620;
     uint64_t nextReflect = 0, nextPing = 0, nextConnect = 0;
     std::string pendingRegister;  // a name to register on the next connection
+    bool renaming = false;        // a rename was asked: its error is only a message
     int handedPort = 0;           // the port the game has now
 
     // the connection check of the current proposal
@@ -105,6 +106,13 @@ void Online::Register(const std::string& name)
         }
         if (p_->ws) { p_->ws->Close(); p_->ws.reset(); }
         p_->nextConnect = 0;
+    });
+}
+void Online::Rename(const std::string& name)
+{
+    Post([this, name] {
+        p_->renaming = true;
+        SendJson("{\"t\":\"rename\",\"name\":" + json::Quote(name) + "}");
     });
 }
 void Online::Queue(const std::string& mode, const std::string& side, int maxPing)
@@ -285,6 +293,14 @@ void Online::Handle(const std::string& text)
         impl.serverUdp = cfg_.host + ":" + std::to_string(impl.udpPort);
         impl.nextReflect = 0;
         impl.ws->Send("{\"t\":\"leaderboard\"}");
+    } else if (t == "renamed") {
+        impl.renaming = false;
+        v.name = m["name"].Str();
+        v.error.clear();
+        v.notice = "You are " + v.name + " now.";
+    } else if (t == "error" && impl.renaming && (m["code"].Str() == "name_taken" || m["code"].Str() == "bad_name")) {
+        impl.renaming = false;
+        v.error = m["message"].Str();
     } else if (t == "error") {
         const std::string code = m["code"].Str();
         v.error = m["message"].Str();

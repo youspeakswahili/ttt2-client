@@ -9,6 +9,7 @@
 // publishes a finished XINPUT_STATE per player; XInputGetState only copies it (no device I/O on the
 // game's thread). If SDL cannot start, every call goes to Windows' own xinput1_4.dll instead.
 #define WIN32_LEAN_AND_MEAN
+#include "../common/gamecontrollerdb.h"
 #include <windows.h>
 #include <SDL3/SDL.h>
 #include "../common/input_config.h"
@@ -241,6 +242,7 @@ DWORD WINAPI LayerThread(void*)
         g_mode = 2;
         return 0;
     }
+    SDL_AddGamepadMappingsFromIO(SDL_IOFromConstMem(kGameControllerDb, sizeof kGameControllerDb - 1), true);
     OpenShared();
     ReloadConfigIfChanged();
     g_mode = 1;

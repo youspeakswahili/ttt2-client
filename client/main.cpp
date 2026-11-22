@@ -1,5 +1,6 @@
 // TTT2 Client - entry point: SDL3 window + renderer (Direct3D 11 on Windows), Dear ImGui.
 // --shot <page 0..3> <file.bmp>: render one page to a picture and quit (UI checks).
+#include "../common/gamecontrollerdb.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include "imgui.h"
@@ -24,6 +25,7 @@ int main(int argc, char** argv)
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "TTT2 Client", SDL_GetError(), nullptr);
         return 1;
     }
+    SDL_AddGamepadMappingsFromIO(SDL_IOFromConstMem(kGameControllerDb, sizeof kGameControllerDb - 1), true);
     float scale = shotFile ? 1.f : SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
     if (scale <= 0) scale = 1;
     const int w = int(1280 * scale), h = int(800 * scale);

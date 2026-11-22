@@ -274,6 +274,17 @@ func (l *Lobby) handle(s *Session, m *inMsg) {
 		s.Send(map[string]any{"t": "leaderboard", "rows": l.store.Leaderboard(100)})
 	case "leave":
 		l.onLeave(s, m)
+	case "rename":
+		old := s.player.Name
+		switch err := l.store.Rename(s.player, strings.TrimSpace(m.Name)); err {
+		case nil:
+			log.Printf("%s is now %s", old, s.player.Name)
+			s.Send(map[string]any{"t": "renamed", "name": s.player.Name})
+		case errBadName:
+			s.sendError("bad_name", "3-16 letters, digits, - or _")
+		default:
+			s.sendError("name_taken", err.Error())
+		}
 	}
 }
 
