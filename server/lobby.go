@@ -17,7 +17,7 @@ import (
 const (
 	checkSeconds    = 8                // what the clients get to test their connection
 	proposalTimeout = 12 * time.Second // check time plus slack
-	failedPairWait  = 10 * time.Minute
+	failedPairWait  = 20 * time.Second // a pair whose proposal fell through waits this long (few players online: keep it short)
 	forfeitAfter    = 2 * time.Minute
 	matchMaxLength  = 90 * time.Minute
 	relayTTL        = 3 * time.Hour
