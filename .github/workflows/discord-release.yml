@@ -20,7 +20,7 @@ on:
         type: boolean
         default: true
       announce:
-        description: Post in #announcements (off = only refresh the download post)
+        description: 'Post in announcements (off = only refresh the download post)'
         type: boolean
         default: true
 
@@ -41,7 +41,7 @@ jobs:
           ANNOUNCE_HOOK: ${{ secrets.DISCORD_ANNOUNCE_WEBHOOK }}
           DOWNLOADS_HOOK: ${{ secrets.DISCORD_DOWNLOADS_WEBHOOK }}
           ROLE: ${{ vars.DISCORD_UPDATE_ROLE || '1574457751030210570' }}
-          DOWNLOADS_MSG: ${{ vars.DISCORD_DOWNLOADS_MESSAGE }}
+          DOWNLOADS_MSG: ${{ vars.DISCORD_DOWNLOADS_MESSAGE || '1574503084380397723' }}
           SETUP_CH: '1574445792008347668'
           HELP_CH: '1574445839127027752'
         run: |
