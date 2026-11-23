@@ -23,6 +23,7 @@ This project is not affiliated with Bandai Namco or with the port's author.
 ## Download
 
 Grab the latest zip from [Releases](../../releases), extract it, run `TTT2 Client.exe`.
+**New here? Follow the [setup guide](SETUP.md)**: what you need, building the game, controllers and online.
 Windows SmartScreen may warn the first time (the exe is not code-signed): **More info → Run anyway**.
 
 ## Updates

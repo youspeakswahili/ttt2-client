@@ -83,7 +83,7 @@ jobs:
                 embeds: [{
                   title: $title, url: $url, color: $color,
                   description: (($notes | rtrimstr("\n")) + "\n\n**[⬇ Download " + (if $zipname == "" then "v" else $zipname end) + "](" + $zip + ")**"),
-                  fields: [{name: "How to update", value: ("Close the client, unzip the new download and copy the files over your old ones. New here? Start with <#" + $setup + ">. Problems? Ask in <#" + $help + ">.")}],
+                  fields: [{name: "How to update", value: ("Open the client: it offers the update when it starts and installs it for you. New here? Start with <#" + $setup + ">. Problems? Ask in <#" + $help + ">.")}],
                   footer: {text: "Released"}, timestamp: (($when | tonumber) | todate)
                 }]
               }' > announce.json
@@ -103,8 +103,8 @@ jobs:
                   color: 5793266,
                   description: ("**Latest version: v" + $ver + "** (released <t:" + $when + ":D>)\n\n**[Download " + $zipname + "](" + $zip + ")**\n\nThis link always gets the newest version:\nhttps://github.com/" + $repo + "/releases/latest"),
                   fields: [
-                    {name: "Getting started", value: ("1. Unzip it into its own folder.\n2. Run **TTT2 Client.exe**.\n3. Follow <#" + $setup + "> to get the game hooked up.")},
-                    {name: "Updating", value: "New versions are posted in announcements. Unzip the new one and copy the files over your old folder."},
+                    {name: "Getting started", value: ("1. Unzip the whole zip into its own folder.\n2. Run **TTT2 Client.exe**.\n3. Follow <#" + $setup + "> to build the game from your own disc and set up your controller.")},
+                    {name: "Updating", value: "The client checks for updates every time it starts and installs them for you. New versions are posted in announcements."},
                     {name: "Good to know", value: ("You need your own copy of the game. We never share game files. Stuck? Ask in <#" + $help + ">.")}
                   ],
                   footer: {text: "Updated automatically on every release"}
