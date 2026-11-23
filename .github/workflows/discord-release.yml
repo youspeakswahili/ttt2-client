@@ -1,0 +1,122 @@
+name: Announce release on Discord
+
+# Posts the patch notes to #announcements (pinging Update Pings) and keeps the
+# pinned download post in #downloads pointing at the newest client.
+# Needs repo secrets DISCORD_ANNOUNCE_WEBHOOK and DISCORD_DOWNLOADS_WEBHOOK.
+#
+# The Update Pings role and the download post id are filled in below and can be
+# overridden with repo variables DISCORD_UPDATE_ROLE and DISCORD_DOWNLOADS_MESSAGE.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to announce (e.g. v0.4.0)
+        required: true
+      ping:
+        description: Ping the Update Pings role
+        type: boolean
+        default: true
+      announce:
+        description: Post in #announcements (off = only refresh the download post)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Discord
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          PING: ${{ github.event_name == 'release' || inputs.ping }}
+          ANNOUNCE: ${{ github.event_name == 'release' || inputs.announce }}
+          ANNOUNCE_HOOK: ${{ secrets.DISCORD_ANNOUNCE_WEBHOOK }}
+          DOWNLOADS_HOOK: ${{ secrets.DISCORD_DOWNLOADS_WEBHOOK }}
+          ROLE: ${{ vars.DISCORD_UPDATE_ROLE || '1574457751030210570' }}
+          DOWNLOADS_MSG: ${{ vars.DISCORD_DOWNLOADS_MESSAGE }}
+          SETUP_CH: '1574445792008347668'
+          HELP_CH: '1574445839127027752'
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/releases/tags/$TAG" > rel.json
+
+          ver="${TAG#v}"
+          pre=$(jq -r '.prerelease' rel.json)
+          url=$(jq -r '.html_url' rel.json)
+          zip=$(jq -r '[.assets[] | select(.name | endswith(".zip"))][0].browser_download_url // empty' rel.json)
+          zipname=$(jq -r '[.assets[] | select(.name | endswith(".zip"))][0].name // empty' rel.json)
+          when=$(jq -r '.published_at | fromdateiso8601' rel.json)
+          [ -n "$zip" ] || zip="$url"
+
+          # Patch notes: the release text, trimmed to fit a Discord embed.
+          jq -r '.body // ""' rel.json | tr -d '\r' > notes.txt
+          if [ "$(wc -c < notes.txt)" -gt 3500 ]; then
+            head -c 3500 notes.txt > n2.txt
+            printf '\n…\n[Full notes on GitHub](%s)' "$url" >> n2.txt
+            mv n2.txt notes.txt
+          fi
+          [ -s notes.txt ] || echo "Bug fixes and improvements." > notes.txt
+
+          label="Update"
+          color=5793266
+          if [ "$pre" = "true" ]; then label="Test build"; color=16426522; fi
+
+          if [ "$ANNOUNCE" = "true" ] && [ -n "$ANNOUNCE_HOOK" ]; then
+            mention=""; roles='[]'
+            if [ "$PING" = "true" ] && [ -n "$ROLE" ]; then mention="<@&$ROLE> "; roles="[\"$ROLE\"]"; fi
+            jq -n --rawfile notes notes.txt \
+              --arg content "${mention}TTT2 Client **v$ver** is out." \
+              --arg title "TTT2 Client v$ver · $label" --arg url "$url" --arg zip "$zip" \
+              --arg zipname "$zipname" --argjson color "$color" --argjson roles "$roles" \
+              --arg when "$when" --arg setup "$SETUP_CH" --arg help "$HELP_CH" '{
+                username: "TTT2 Updates",
+                content: $content,
+                allowed_mentions: {parse: [], roles: $roles},
+                embeds: [{
+                  title: $title, url: $url, color: $color,
+                  description: (($notes | rtrimstr("\n")) + "\n\n**[⬇ Download " + (if $zipname == "" then "v" else $zipname end) + "](" + $zip + ")**"),
+                  fields: [{name: "How to update", value: ("Close the client, unzip the new download and copy the files over your old ones. New here? Start with <#" + $setup + ">. Problems? Ask in <#" + $help + ">.")}],
+                  footer: {text: "Released"}, timestamp: (($when | tonumber) | todate)
+                }]
+              }' > announce.json
+            curl -fsS -H 'Content-Type: application/json' -d @announce.json "$ANNOUNCE_HOOK?wait=true" > /dev/null
+            echo "Announced v$ver"
+          fi
+
+          # The pinned download post always shows the newest full release.
+          if [ "$pre" != "true" ] && [ -n "$DOWNLOADS_HOOK" ]; then
+            jq -n --arg ver "$ver" --arg zip "$zip" --arg zipname "$zipname" --arg url "$url" \
+              --arg repo "$REPO" --arg when "$when" --arg setup "$SETUP_CH" --arg help "$HELP_CH" '{
+                content: "",
+                allowed_mentions: {parse: []},
+                embeds: [{
+                  title: "⬇ Download the TTT2 Client",
+                  url: ("https://github.com/" + $repo + "/releases/latest"),
+                  color: 5793266,
+                  description: ("**Latest version: v" + $ver + "** (released <t:" + $when + ":D>)\n\n**[Download " + $zipname + "](" + $zip + ")**\n\nThis link always gets the newest version:\nhttps://github.com/" + $repo + "/releases/latest"),
+                  fields: [
+                    {name: "Getting started", value: ("1. Unzip it into its own folder.\n2. Run **TTT2 Client.exe**.\n3. Follow <#" + $setup + "> to get the game hooked up.")},
+                    {name: "Updating", value: "New versions are posted in announcements. Unzip the new one and copy the files over your old folder."},
+                    {name: "Good to know", value: ("You need your own copy of the game. We never share game files. Stuck? Ask in <#" + $help + ">.")}
+                  ],
+                  footer: {text: "Updated automatically on every release"}
+                }]
+              }' > downloads.json
+            if [ -n "$DOWNLOADS_MSG" ]; then
+              curl -fsS -X PATCH -H 'Content-Type: application/json' -d @downloads.json \
+                "$DOWNLOADS_HOOK/messages/$DOWNLOADS_MSG" > /dev/null
+              echo "Download post now shows v$ver"
+            else
+              id=$(curl -fsS -H 'Content-Type: application/json' -d @downloads.json "$DOWNLOADS_HOOK?wait=true" | jq -r .id)
+              echo "Posted a new download message: set repo variable DISCORD_DOWNLOADS_MESSAGE=$id"
+              echo "::notice::New download message id $id (save it as DISCORD_DOWNLOADS_MESSAGE)"
+            fi
+          fi
