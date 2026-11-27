@@ -2877,7 +2877,17 @@ void App::Impl::MatchGameClosed()
         plat::ReadBinary(ResultsFile(), games);
         const std::string traceFile = plat::JoinPath(plat::GameDataDir(), "trace.txt");
         plat::ReadBinary(traceFile, trace);
-        plat::ReadBinary(plat::JoinPath(plat::GameDataDir(), "log.txt"), log);
+        // the game build writes a numbered log per run into its own logs folder (logs\ttt2_001.log, ...): the newest one
+        {
+            std::string newest;
+            for (const std::string& f : plat::ListFilesRecursive(plat::JoinPath(installDir, "logs"))) {
+                const size_t slash = f.find_last_of("\\/");
+                const std::string name = slash == std::string::npos ? f : f.substr(slash + 1);
+                if (name.rfind("ttt2_", 0) == 0 && name.size() > 4 && name.compare(name.size() - 4, 4, ".log") == 0 && f > newest) newest = f;
+            }
+            if (!newest.empty()) plat::ReadBinary(newest, log);
+            else plat::ReadBinary(plat::JoinPath(plat::GameDataDir(), "log.txt"), log);
+        }
         // Kept small on disk (the user, 2026-11-25): a long trace or log keeps its start and its end (where a match's
         // trouble shows), and the whole file stays under 4 MB - the oldest matches go first.
         auto trim = [](std::string& text, size_t cap) {
