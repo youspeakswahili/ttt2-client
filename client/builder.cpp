@@ -1,5 +1,6 @@
 #include "builder.h"
 #include "platform.h"
+#include "xdvdfs.h"
 #include "../common/input_config.h"
 #include <cstdio>
 
@@ -151,24 +152,26 @@ void Builder::Run(BuildRequest r)
         // 1. the disc's files (the image itself is never changed)
         const std::string game = plat::JoinPath(r.dest, "game");
         Say("Copying the game's files out of your disc image (a few minutes)", 0.03f);
-        const uint64_t expect = 7600ull << 20;   // about what the disc holds
-        int rc = plat::RunHiddenAndWait(rexglue, "--log-file \"" + logFile + "\" vfs dump \"" + r.iso + "\" \"" + game + "\"",
-                                        r.dest, err, [&] {
-            const double done = double(plat::FolderBytes(game)) / double(expect);
-            progress_ = 0.03f + 0.80f * float(done > 1 ? 1 : done);
-        });
-        if (rc == -1) return fail("could not start rexglue.exe (" + err + ").");
-        if (rc != 0) return fail("reading the disc image failed: " + LastFailure(logFile, rc) + " (see \"setup log.txt\" in " + r.dest + ").");
+        // read here, with plain file reads (the test kit's way, proven on the real disc)
+        Line("Disc image: " + r.iso);
+        std::string xerr;
+        if (!xdvdfs::Extract(r.iso, game, xerr, [&](uint64_t done, uint64_t total) {
+                progress_ = 0.03f + 0.80f * float(total ? double(done) / double(total) : 0.0);
+                return true;
+            }))
+            return fail("reading the disc image failed: " + xerr + ".");
         if (!plat::FileExists(plat::JoinPath(game, "default.xex"))) return fail("that disc image has no default.xex. Is it TTT2 for Xbox 360?");
 
         // 2. Title Update 3: its patch goes next to default.xex, the rest into update
         const std::string update = plat::JoinPath(r.dest, "update");
         Say("Reading Title Update 3", 0.84f);
-        rc = plat::RunHiddenAndWait(rexglue, "--log-file \"" + logFile + "\" vfs dump \"" + r.tu + "\" \"" + update + "\"", r.dest, err, {});
-        if (rc != 0) return fail("reading the title update failed: " + LastFailure(logFile, rc) + " (see \"setup log.txt\").");
+        int rc = plat::RunHiddenAndWait(rexglue, "--log-file \"" + logFile + "\" vfs dump \"" + r.tu + "\" \"" + update + "\"", r.dest, err, {});
+        const int tuCode = rc;   // judged by what it wrote: the reader can stop badly after writing everything
         std::string patch;
         for (const auto& f : plat::ListFilesRecursive(update))
             if (EndsWith(f, ".xexp") || EndsWith(f, ".XEXP") || EndsWith(f, ".Xexp")) { patch = f; break; }
+        if (patch.empty() && tuCode != 0) return fail("reading the title update failed: " + LastFailure(logFile, tuCode) + " (see \"setup log.txt\").");
+        if (!patch.empty() && tuCode != 0) Line("The title update reader stopped with code " + std::to_string(tuCode) + " after writing the patch; carrying on.");
         if (patch.empty()) return fail("that title update has no .xexp patch in it. Use TU3 (TU_174Q22P_...).");
         if (!plat::CopyFileTo(patch, plat::JoinPath(game, "default.xexp"), err)) return fail("could not copy the patch (" + err + ").");
     }
