@@ -22,9 +22,9 @@ const (
 	matchMaxLength  = 90 * time.Minute
 	abandonAfter    = 3 * time.Minute // one player gone and the other never reported: the match is over this long after the forfeit time
 	relayTTL        = 3 * time.Hour
-	minClient       = "0.2.0"
-	maxFights       = 20 // fights one match can report (a set and its rematches)
-	fightSeconds    = 25 // a fight takes at least this long: a forfeit's report counts no more fights than the match had time for
+	minClient       = "0.5.0" // the first alpha on the new game build: older clients run a different game and would desync
+	maxFights       = 20      // fights one match can report (a set and its rematches)
+	fightSeconds    = 25      // a fight takes at least this long: a forfeit's report counts no more fights than the match had time for
 )
 
 type Session struct {

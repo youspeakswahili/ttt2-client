@@ -118,7 +118,7 @@ func (c *tclient) expectNothing() {
 func register(t *testing.T, addr, name string) *tclient {
 	c := dial(t, addr)
 	c.name = name
-	c.send(map[string]any{"t": "register", "v": 1, "name": name, "client": "0.2.0"})
+	c.send(map[string]any{"t": "register", "v": 1, "name": name, "client": "0.5.0-alpha"})
 	m := c.next("registered")
 	c.tok, c.udpT = m["token"].(string), m["udpToken"].(string)
 	c.port = int(m["udpPort"].(float64))
@@ -176,32 +176,32 @@ func TestAccounts(t *testing.T) {
 
 	b := dial(t, addr)
 	b.name = "dup"
-	b.send(map[string]any{"t": "register", "name": "mumbai", "client": "0.2.0"})
+	b.send(map[string]any{"t": "register", "name": "mumbai", "client": "0.5.0-alpha"})
 	if m := b.next("error"); m["code"] != "name_taken" {
 		t.Fatalf("duplicate name: %v", m)
 	}
 	c := dial(t, addr)
 	c.name = "bad"
-	c.send(map[string]any{"t": "register", "name": "a b", "client": "0.2.0"})
+	c.send(map[string]any{"t": "register", "name": "a b", "client": "0.5.0-alpha"})
 	if m := c.next("error"); m["code"] != "bad_name" {
 		t.Fatalf("bad name: %v", m)
 	}
 	d := dial(t, addr)
 	d.name = "old"
-	d.send(map[string]any{"t": "hello", "token": a.tok, "client": "0.1.9"})
+	d.send(map[string]any{"t": "hello", "token": a.tok, "client": "0.4.0"})
 	if m := d.next("error"); m["code"] != "outdated" {
 		t.Fatalf("old client: %v", m)
 	}
 	e := dial(t, addr)
 	e.name = "again"
-	e.send(map[string]any{"t": "hello", "token": a.tok, "client": "0.2.0"})
+	e.send(map[string]any{"t": "hello", "token": a.tok, "client": "0.5.0-alpha"})
 	if m := e.next("welcome"); m["name"] != "Mumbai" || m["rating"].(float64) != 1500 {
 		t.Fatalf("login: %v", m)
 	}
 	a.next("error") // the first session is told it was replaced
 	f := dial(t, addr)
 	f.name = "nobody"
-	f.send(map[string]any{"t": "hello", "token": strings.Repeat("ab", 32), "client": "0.2.0"})
+	f.send(map[string]any{"t": "hello", "token": strings.Repeat("ab", 32), "client": "0.5.0-alpha"})
 	if m := f.next("error"); m["code"] != "bad_token" {
 		t.Fatalf("bad token: %v", m)
 	}

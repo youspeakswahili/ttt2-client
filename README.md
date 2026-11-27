@@ -33,10 +33,10 @@ carries `manifest.txt` (each file's SHA-512) and `manifest.sig` (an Ed25519 sign
 the client installs nothing that is not signed by that key and unchanged. Making a release:
 
 ```
-go run ./tools/release -key <path to release-signing.key> -dir "pkg/TTT2 Client" -version 0.1.8 -out TTT2-Client-0.1.8.zip
+go run ./tools/release -key <path to release-signing.key> -dir "pkg/TTT2 Client" -version 0.5.1-alpha -out TTT2-Client-0.5.1-alpha.zip
 ```
 
-Bump `client/version.h` first, tag the release `v0.1.8`, attach the zip. The private key never goes in this repository.
+Bump `client/version.h` first, tag the release `v0.5.1-alpha` (mark it a pre-release on GitHub), attach the zip. The private key never goes in this repository.
 
 ## What's in here
 
