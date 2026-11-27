@@ -110,6 +110,17 @@ bool Builder::Extracted(const std::string& dir)
            plat::FileExists(plat::JoinPath(dir, "game\\default.xexp"));
 }
 
+// rexglue.exe's own reason for stopping: the last "failed: ..." line it wrote into the setup log
+static std::string LastFailure(const std::string& logFile, int rc)
+{
+    std::string text;
+    plat::ReadText(logFile, text);
+    const size_t at = text.rfind("failed: ");
+    if (at == std::string::npos) return "code " + std::to_string(rc);
+    size_t end = text.find_first_of("\r\n", at);
+    return text.substr(at + 8, end == std::string::npos ? std::string::npos : end - at - 8);
+}
+
 void Builder::Run(BuildRequest r)
 {
     auto fail = [&](const std::string& why) {
@@ -147,14 +158,14 @@ void Builder::Run(BuildRequest r)
             progress_ = 0.03f + 0.80f * float(done > 1 ? 1 : done);
         });
         if (rc == -1) return fail("could not start rexglue.exe (" + err + ").");
-        if (rc != 0) return fail("reading the disc image failed (code " + std::to_string(rc) + "). See \"setup log.txt\" in " + r.dest + ".");
+        if (rc != 0) return fail("reading the disc image failed: " + LastFailure(logFile, rc) + " (see \"setup log.txt\" in " + r.dest + ").");
         if (!plat::FileExists(plat::JoinPath(game, "default.xex"))) return fail("that disc image has no default.xex. Is it TTT2 for Xbox 360?");
 
         // 2. Title Update 3: its patch goes next to default.xex, the rest into update
         const std::string update = plat::JoinPath(r.dest, "update");
         Say("Reading Title Update 3", 0.84f);
         rc = plat::RunHiddenAndWait(rexglue, "--log-file \"" + logFile + "\" vfs dump \"" + r.tu + "\" \"" + update + "\"", r.dest, err, {});
-        if (rc != 0) return fail("reading the title update failed (code " + std::to_string(rc) + "). See \"setup log.txt\".");
+        if (rc != 0) return fail("reading the title update failed: " + LastFailure(logFile, rc) + " (see \"setup log.txt\").");
         std::string patch;
         for (const auto& f : plat::ListFilesRecursive(update))
             if (EndsWith(f, ".xexp") || EndsWith(f, ".XEXP") || EndsWith(f, ".Xexp")) { patch = f; break; }
