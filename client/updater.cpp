@@ -111,8 +111,13 @@ void Updater::Check()
     state_ = CHECKING;
     t_ = std::thread([this] {
         std::string body, err;
-        if (!plat::HttpGet(std::string("https://api.github.com/repos/") + kRepo + "/releases/latest", body, err))
+        // every release, newest first (pre-releases included: the alpha's are); none published yet is up to date
+        if (!plat::HttpGet(std::string("https://api.github.com/repos/") + kRepo + "/releases?per_page=1", body, err))
             return Fail("Could not check for updates (" + err + ").");
+        if (body.find("tag_name") == std::string::npos && body.find('[') != std::string::npos) {
+            state_ = UP_TO_DATE;
+            return;
+        }
         const std::string tag = JsonString(body, 0, "tag_name");
         std::string url;
         size_t at = 0;
