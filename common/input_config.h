@@ -16,7 +16,7 @@
 //
 // Outputs are the Xbox 360 controller the game reads. What each one does in a fight is the game's
 // own setting (OPTIONS -> CONTROLLER SETUP); out of the box X = 1 (LP), Y = 2 (RP), A = 3 (LK), B = 4 (RK), LB = Tag.
-// M12 / M34 / M13 / M24 / M1234 / M134 are macros that press those face buttons together.
+// M12 / M34 / M13 / M24 / M1234 / M134 / M23 / M14 are macros that press those face buttons together.
 #pragma once
 #include <cstdint>
 #include <cstdio>
@@ -29,12 +29,12 @@ namespace ttt2 {
 
 enum Out : int { O_UP, O_DOWN, O_LEFT, O_RIGHT, O_START, O_BACK, O_LS, O_RS, O_LB, O_RB, O_A, O_B, O_X, O_Y, O_LT, O_RT,
                  // macros: one physical button presses several of the game's default buttons (X 1, Y 2, A 3, B 4)
-                 O_M12, O_M34, O_M13, O_M24, O_M1234, O_M134, O_COUNT };
+                 O_M12, O_M34, O_M13, O_M24, O_M1234, O_M134, O_M23, O_M14, O_COUNT };
 
 inline const char* OutKey(int o)
 {
     static const char* k[O_COUNT] = { "UP", "DOWN", "LEFT", "RIGHT", "START", "BACK", "LS", "RS", "LB", "RB", "A", "B", "X", "Y", "LT", "RT",
-                                      "M12", "M34", "M13", "M24", "M1234", "M134" };
+                                      "M12", "M34", "M13", "M24", "M1234", "M134", "M23", "M14" };
     return o >= 0 && o < O_COUNT ? k[o] : "";
 }
 // XINPUT_GAMEPAD wButtons bit of each output (triggers: 0, they are analog bytes)
@@ -44,7 +44,7 @@ inline uint16_t OutBit(int o)
     static const uint16_t b[O_COUNT] = { 0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020, 0x0040, 0x0080, 0x0100, 0x0200,
                                          0x1000, 0x2000, 0x4000, 0x8000, 0, 0,
                                          0x4000 | 0x8000, 0x1000 | 0x2000, 0x4000 | 0x1000, 0x8000 | 0x2000, 0xF000,
-                                         0x4000 | 0x1000 | 0x2000 };
+                                         0x4000 | 0x1000 | 0x2000, 0x8000 | 0x1000, 0x4000 | 0x2000 };
     return o >= 0 && o < O_COUNT ? b[o] : 0;
 }
 

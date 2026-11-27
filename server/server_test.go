@@ -415,6 +415,31 @@ func TestForfeitAfterLeaving(t *testing.T) {
 	}
 }
 
+func TestAbandonedWhenTheOneWhoStayedNeverReports(t *testing.T) {
+	lobby, addr := newTestServer(t)
+	a := register(t, addr, "Winner")
+	b := register(t, addr, "Quitter")
+	a.send(map[string]any{"t": "queue", "mode": "ranked"})
+	a.next("queued")
+	b.send(map[string]any{"t": "queue", "mode": "ranked"})
+	b.next("queued")
+	lobby.Tick(time.Now())
+	match := a.next("proposal")["match"].(string)
+	b.next("proposal")
+	a.send(map[string]any{"t": "check", "match": match, "ok": true, "rtt": 30})
+	b.send(map[string]any{"t": "check", "match": match, "ok": true, "rtt": 30})
+	a.next("go")
+	b.next("go")
+	b.conn.Close()
+	time.Sleep(100 * time.Millisecond)
+	lobby.Tick(time.Now().Add(forfeitAfter + time.Second)) // gone, but the one who stayed may still report
+	a.expectNothing()
+	lobby.Tick(time.Now().Add(forfeitAfter + abandonAfter + time.Second))
+	if m := a.next("rated"); m["outcome"] != "abandoned" || m["change"].(float64) != 0 {
+		t.Fatalf("abandoned: %v", m)
+	}
+}
+
 func TestRatingWindowWidens(t *testing.T) {
 	if ratingWindow(0) != 100 || ratingWindow(10*time.Second) != 350 || ratingWindow(time.Hour) != 1000 {
 		t.Fatal("ratingWindow")
@@ -478,5 +503,54 @@ func TestRename(t *testing.T) {
 	}
 	if err := st.Rename(b, "BRAVO"); err != nil {
 		t.Fatalf("own name, other case: %v", err)
+	}
+}
+
+// The game's ranks on the server: fights both PCs report alike move them, reports that differ move nothing.
+func TestRankedFightsMoveTheGamesRanks(t *testing.T) {
+	play := func(lobby *Lobby, addr, n1, n2 string, fa, fb []map[string]any) (map[string]any, map[string]any) {
+		a := register(t, addr, n1)
+		b := register(t, addr, n2)
+		a.send(map[string]any{"t": "queue", "mode": "ranked", "side": "p1"})
+		a.next("queued")
+		b.send(map[string]any{"t": "queue", "mode": "ranked", "side": "p2"})
+		b.next("queued")
+		lobby.Tick(time.Now())
+		match := a.next("proposal")["match"].(string)
+		b.next("proposal")
+		a.send(map[string]any{"t": "check", "match": match, "ok": true, "rtt": 30})
+		b.send(map[string]any{"t": "check", "match": match, "ok": true, "rtt": 30})
+		a.next("go")
+		b.next("go")
+		a.send(map[string]any{"t": "result", "match": match, "winner": "me", "fights": fa})
+		b.send(map[string]any{"t": "result", "match": match, "winner": "opponent", "fights": fb})
+		return a.next("rated"), b.next("rated")
+	}
+	// Kazuya (14) and Jun (42) beat Paul (0) SOLO twice: beginners win 200 points a fight
+	fights := []map[string]any{
+		{"teams": [][]int{{14, 42}, {0, 0}}, "winner": 0},
+		{"teams": [][]int{{14, 42}, {0, 0}}, "winner": 0},
+	}
+	lobby, addr := newTestServer(t)
+	ra, rb := play(lobby, addr, "Kaz", "Paul", fights, fights)
+	ranks := ra["ranks"].([]any)
+	if len(ranks) != 2 {
+		t.Fatalf("winner's rank changes: %v", ra["ranks"])
+	}
+	kaz := ranks[0].(map[string]any)
+	if kaz["c"].(float64) != 14 || kaz["before"].(float64) != 0 || kaz["after"].(float64) != 2 || kaz["pa"].(float64) != 400 {
+		t.Fatalf("Kazuya after two wins from Beginner: %v", kaz)
+	}
+	if chars := ra["chars"].([]any); len(chars) != numChars || chars[14].(map[string]any)["rank"].(float64) != 2 {
+		t.Fatalf("the winner's ranks: %v", ra["chars"])
+	}
+	if paul := rb["ranks"].([]any); len(paul) != 1 || paul[0].(map[string]any)["c"].(float64) != 0 {
+		t.Fatalf("the loser's (SOLO) rank changes: %v", rb["ranks"])
+	}
+	// the reports' teams differ: the result counts, the ranks do not move
+	other := []map[string]any{{"teams": [][]int{{14, 42}, {1, 1}}, "winner": 0}, fights[1]}
+	ra, _ = play(lobby, addr, "Kaz2", "Paul2", fights, other)
+	if ra["outcome"] != "agreed" || ra["ranks"] != nil || ra["chars"].([]any)[14].(map[string]any)["rank"].(float64) != 0 {
+		t.Fatalf("differing fights moved ranks: %v", ra)
 	}
 }

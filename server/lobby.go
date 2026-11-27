@@ -20,8 +20,11 @@ const (
 	failedPairWait  = 20 * time.Second // a pair whose proposal fell through waits this long (few players online: keep it short)
 	forfeitAfter    = 2 * time.Minute
 	matchMaxLength  = 90 * time.Minute
+	abandonAfter    = 3 * time.Minute // one player gone and the other never reported: the match is over this long after the forfeit time
 	relayTTL        = 3 * time.Hour
 	minClient       = "0.2.0"
+	maxFights       = 20 // fights one match can report (a set and its rematches)
+	fightSeconds    = 25 // a fight takes at least this long: a forfeit's report counts no more fights than the match had time for
 )
 
 type Session struct {
@@ -59,7 +62,8 @@ type Match struct {
 	started  time.Time
 	checks   [2]check
 	relay    [2]string
-	reports  [2]string // winner's player id, as each side reported it
+	reports  [2]string  // winner's player id, as each side reported it
+	fights   [2][]Fight // the match's fights, as each side reported them
 	left     [2]time.Time
 	rtt      int
 	direct   bool
@@ -137,19 +141,20 @@ func versionAtLeast(have, want string) bool {
 }
 
 type inMsg struct {
-	T       string `json:"t"`
-	V       int    `json:"v"`
-	Token   string `json:"token"`
-	Name    string `json:"name"`
-	Client  string `json:"client"`
-	Mode    string `json:"mode"`
-	Side    string `json:"side"`
-	MaxPing int    `json:"maxPing"`
-	Match   string `json:"match"`
-	OK      bool   `json:"ok"`
-	RTT     int    `json:"rtt"`
-	Direct  bool   `json:"direct"`
-	Winner  string `json:"winner"`
+	T       string  `json:"t"`
+	V       int     `json:"v"`
+	Token   string  `json:"token"`
+	Name    string  `json:"name"`
+	Client  string  `json:"client"`
+	Mode    string  `json:"mode"`
+	Side    string  `json:"side"`
+	MaxPing int     `json:"maxPing"`
+	Match   string  `json:"match"`
+	OK      bool    `json:"ok"`
+	RTT     int     `json:"rtt"`
+	Direct  bool    `json:"direct"`
+	Winner  string  `json:"winner"`
+	Fights  []Fight `json:"fights"`
 }
 
 // Serve runs one client connection until it closes.
@@ -214,7 +219,7 @@ func (l *Lobby) Serve(c *wsConn, remote string) {
 	l.sessions[p.ID] = s
 	snap := l.store.Snapshot(p)
 	welcome := map[string]any{"t": "welcome", "id": snap.ID, "name": snap.Name, "rating": snap.Rating, "games": snap.Games,
-		"wins": snap.Wins, "udpToken": s.udpToken, "udpPort": l.udp.Port()}
+		"wins": snap.Wins, "udpToken": s.udpToken, "udpPort": l.udp.Port(), "chars": l.store.CharsOf(p)}
 	if token != "" {
 		welcome["t"] = "registered"
 		welcome["token"] = token
@@ -550,6 +555,10 @@ func (l *Lobby) onResult(s *Session, msg *inMsg) {
 		return
 	}
 	slot := m.slotOf(s.player)
+	if len(msg.Fights) > maxFights {
+		msg.Fights = msg.Fights[:maxFights]
+	}
+	m.fights[slot] = msg.Fights
 	if msg.Winner == "me" {
 		m.reports[slot] = m.players[slot].ID
 	} else {
@@ -573,7 +582,9 @@ func (l *Lobby) checkForfeit(m *Match, now time.Time) {
 		}
 		if m.reports[1-i] != "" && m.sessions[1-i] != nil {
 			l.finish(m, m.reports[1-i], "forfeit")
-		} else if !m.left[1-i].IsZero() {
+		} else if !m.left[1-i].IsZero() || now.Sub(m.left[i]) > forfeitAfter+abandonAfter {
+			// both gone, or the one who stayed never said who won: nobody is playing it any more
+			// (it used to stay "in matches" for up to 90 minutes)
 			l.finish(m, "", "abandoned")
 		}
 		return
@@ -596,6 +607,17 @@ func (l *Lobby) finish(m *Match, winnerID, outcome string) {
 		changes[w], changes[1-w] = gain, loss
 	}
 	rec.P1Change, rec.P2Change = changes[0], changes[1]
+	// the game's own ranks: the fights both PCs reported alike (a forfeit: the one who stayed, no more than the match
+	// had time for); a disputed match changes nobody's
+	var ranks [2][]RankChange
+	if m.mode == "ranked" && winnerID != "" {
+		fights, how := agreedFights(m, outcome)
+		if len(fights) > 0 {
+			ranks = l.store.ApplyFights(m.players, fights)
+			rec.Fights = fights
+		}
+		log.Printf("match %s: %d fight(s) for the ranks (%s)", m.id, len(fights), how)
+	}
 	l.store.AppendMatch(rec)
 	for i, s := range m.sessions {
 		if s == nil {
@@ -603,7 +625,8 @@ func (l *Lobby) finish(m *Match, winnerID, outcome string) {
 		}
 		s.match = nil
 		p := l.store.Snapshot(m.players[i])
-		s.Send(map[string]any{"t": "rated", "match": m.id, "outcome": outcome, "rating": p.Rating, "change": changes[i], "games": p.Games, "wins": p.Wins})
+		s.Send(map[string]any{"t": "rated", "match": m.id, "outcome": outcome, "rating": p.Rating, "change": changes[i], "games": p.Games, "wins": p.Wins,
+			"side": i, "ranks": ranks[i], "chars": l.store.CharsOf(m.players[i])})
 	}
 	log.Printf("match %s: %s", m.id, outcome)
 }
@@ -622,4 +645,33 @@ func (l *Lobby) BroadcastStats() {
 	for _, s := range l.sessions {
 		s.Send(msg)
 	}
+}
+
+// agreedFights: the fights that count for the ranks.
+func agreedFights(m *Match, outcome string) ([]Fight, string) {
+	switch outcome {
+	case "agreed":
+		a, b := m.fights[0], m.fights[1]
+		if len(a) != len(b) {
+			return nil, "the two reports differ"
+		}
+		for i := range a {
+			if a[i] != b[i] || !a[i].valid() {
+				return nil, "the two reports differ"
+			}
+		}
+		return a, "both reports alike"
+	case "forfeit":
+		stayed := 0
+		if m.reports[0] == "" {
+			stayed = 1
+		}
+		f := m.fights[stayed]
+		limit := int(time.Since(m.started).Seconds()) / fightSeconds
+		if len(f) > limit {
+			f = f[:limit]
+		}
+		return f, "the report of the one who stayed"
+	}
+	return nil, outcome
 }

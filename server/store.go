@@ -27,6 +27,8 @@ type Player struct {
 	Wins      int       `json:"wins"`
 	Created   time.Time `json:"created"`
 	LastSeen  time.Time `json:"lastSeen"`
+	// the game's ranks, one per character (award.go): only the server changes them
+	Chars []Fighter `json:"chars,omitempty"`
 }
 
 type MatchRecord struct {
@@ -38,6 +40,7 @@ type MatchRecord struct {
 	Outcome  string    `json:"outcome"`          // agreed, disputed, forfeit, abandoned
 	P1Change int       `json:"p1Change"`
 	P2Change int       `json:"p2Change"`
+	Fights   []Fight   `json:"fights,omitempty"` // the fights the ranks were worked out from
 	Started  time.Time `json:"started"`
 	Ended    time.Time `json:"ended"`
 	RTT      int       `json:"rtt"`
@@ -235,4 +238,97 @@ func (s *Store) Flush() error {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(s.dir, "players.json"))
+}
+
+const numChars = 59
+
+// Fight is one fight of a match as both PCs report it: the sides' characters (side 0 = 1P; SOLO: the same twice),
+// the winning side, a draw.
+type Fight struct {
+	Teams  [2][2]int `json:"teams"`
+	Winner int       `json:"winner"`
+	Draw   bool      `json:"draw"`
+}
+
+func (f Fight) valid() bool {
+	for _, t := range f.Teams {
+		for _, c := range t {
+			if c < 0 || c >= numChars {
+				return false
+			}
+		}
+	}
+	return f.Winner == 0 || f.Winner == 1
+}
+
+// RankChange is what a match did to one of a player's characters.
+type RankChange struct {
+	C      int `json:"c"`
+	Before int `json:"before"`
+	After  int `json:"after"`
+	PB     int `json:"pb"`
+	PA     int `json:"pa"`
+}
+
+func (p *Player) chars() []Fighter {
+	if len(p.Chars) != numChars {
+		c := make([]Fighter, numChars)
+		copy(c, p.Chars)
+		p.Chars = c
+	}
+	return p.Chars
+}
+
+// CharsOf copies a player's ranks under the lock.
+func (s *Store) CharsOf(p *Player) []Fighter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Fighter(nil), p.chars()...)
+}
+
+// ApplyFights runs the game's award for each fight of a ranked match, in order. players[i] stood on side i.
+// Returns each player's changes (one line per character, first rank to last).
+func (s *Store) ApplyFights(players [2]*Player, fights []Fight) [2][]RankChange {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out [2][]RankChange
+	for _, f := range fights {
+		if !f.valid() || f.Draw {
+			continue
+		}
+		var teams [2]Team
+		for side := 0; side < 2; side++ {
+			ch := players[side].chars()
+			for i := 0; i < 2; i++ {
+				teams[side][i] = ch[f.Teams[side][i]]
+			}
+		}
+		before := teams
+		Award(&teams[f.Winner], &teams[1-f.Winner], false)
+		for side := 0; side < 2; side++ {
+			ch := players[side].chars()
+			t := f.Teams[side]
+			// SOLO: the character keeps what the first slot ends with (the game's write-back)
+			slots := []int{0, 1}
+			if t[0] == t[1] {
+				slots = []int{0}
+			}
+			for _, i := range slots {
+				ch[t[i]] = teams[side][i]
+				merged := false
+				for k := range out[side] {
+					if out[side][k].C == t[i] {
+						out[side][k].After, out[side][k].PA = teams[side][i].Rank, teams[side][i].Points
+						merged = true
+					}
+				}
+				if !merged {
+					out[side] = append(out[side], RankChange{C: t[i], Before: before[side][i].Rank, After: teams[side][i].Rank,
+						PB: before[side][i].Points, PA: teams[side][i].Points})
+				}
+			}
+		}
+	}
+	s.dirty = true
+	return out
 }

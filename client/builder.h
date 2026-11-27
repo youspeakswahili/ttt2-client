@@ -1,6 +1,6 @@
-// TTT2 Client - the game builder: fetches the official port release from its author's GitHub, runs its
-// installer on the player's own disc image and Title Update 3 (no UI, Windows asks for admin once), then
-// adds the controller layer. The client carries no game files and no part of the port.
+// TTT2 Client - the game builder: copies the game's files out of the player's own disc image and Title Update 3
+// (with the bundled rexglue.exe), then adds the game build that ships in the client's "game build" folder.
+// The client carries no game files.
 #pragma once
 #include <atomic>
 #include <mutex>
@@ -10,12 +10,18 @@
 
 struct BuildRequest {
     std::string iso, tu, dest, dlc;
-    bool onlyLayer = false;   // just (re)install the controller layer into dest
+    bool onlyLayer = false;   // just (re)copy the game build into dest
 };
 
 class Builder {
 public:
-    static constexpr const char* kRepo = "shihabal3amri/tekken-tag-tournament-2-pc";
+    static constexpr const char* kRepo = "";               // no outside release any more
+    static constexpr const char* kEngineDir = "game build";
+    static constexpr const char* kBuildTag = "new-2";
+    // Where the game build is: "game build" next to the client, or the client's own folder when ttt2.exe sits there.
+    static std::string EngineDir();
+    // dir already holds the disc's files and the patch (a rebuild there only refreshes the game build)
+    static bool Extracted(const std::string& dir);
 
     ~Builder();
     void Start(const BuildRequest& r);

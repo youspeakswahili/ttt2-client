@@ -2,9 +2,9 @@
 
 <img src="art/logo.png" width="128" align="right" alt="TTT2 Client logo">
 
-A launcher for the [Tekken Tag Tournament 2 PC port](https://github.com/shihabal3amri/tekken-tag-tournament-2-pc):
+A client for Tekken Tag Tournament 2 on PC:
 
-- **Install**: builds the PC version from *your own* Xbox 360 disc image and Title Update 3, using the port's official release.
+- **Install**: builds the PC version from *your own* Xbox 360 disc image and Title Update 3, with this project's own game build.
 - **Controls**: every controller works (PlayStation pads, fight sticks, hitboxes, generic sticks). Press-to-map every
   button, Tag and macros (1+2, 3+4, 1+3, 2+4, 1+3+4, 1+2+3+4), SOCD options for hitboxes, live input test.
 - **Settings**: the game's input delay, low latency, netcode and display settings, plus full screen for the client.
@@ -18,7 +18,7 @@ Coming next: the game starting straight into a found match (and practice while y
 connection instead of Steam.
 
 **No game files are included or downloaded by this project.** You need your own copy of the game.
-This project is not affiliated with Bandai Namco or with the port's author.
+This project is not affiliated with Bandai Namco.
 
 ## Download
 

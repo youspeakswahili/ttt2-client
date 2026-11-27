@@ -32,6 +32,10 @@ struct MatchInfo {
     std::string relayToken;        // ours
     bool direct = false;
     int rtt = 0;
+    // The opponent's connection as their client sees it (sent during the connection check; empty / 0 from older clients):
+    // 0 unknown, 1 wired, 2 Wi-Fi; their region (Windows' location setting, e.g. "Sweden").
+    int opponentConn = 0;
+    std::string opponentRegion;
     std::string relayAddr;         // the server's UDP relay, a.b.c.d:port
     int localPort = 0;             // the UDP port the check ran on (the game binds it again)
     uint32_t seed = 0;
@@ -51,9 +55,20 @@ public:
         uint64_t queueSinceMs = 0;
         MatchInfo match;
         std::string checkStage;     // what the connection check is doing
+        // A found match waits for this player to accept it (CHECKING): until acceptDeadlineMs (net::NowMs clock).
+        // Not accepted by then counts as declining: out of the queue.
+        bool accepted = false;
+        uint64_t acceptDeadlineMs = 0;
         int lastChange = 0;         // the last rated match's change
-        std::string lastOutcome;
+        std::string lastOutcome, lastMatch;   // how the server settled it (agreed, forfeit, disputed, abandoned) and which match
         std::vector<BoardRow> board;
+        // The game's ranks as the server keeps them (one a character; from welcome and every rated match). The server
+        // works out each ranked fight itself: these are the ones that count, the game is given them before a match.
+        struct Rank { int rank = 0, points = 0, streak = 0, bar1 = 0, bar2 = 0; };
+        std::vector<Rank> chars;
+        int charsVersion = 0;       // bumped whenever chars changes
+        struct RankChange { int c = -1, before = 0, after = 0, pointsBefore = 0, pointsAfter = 0; };
+        std::vector<RankChange> lastRanks;   // what the last rated match did to this player's characters
     };
 
     explicit Online(ServerConfig cfg, std::string dataDir);
@@ -68,8 +83,14 @@ public:
     void Queue(const std::string& mode, const std::string& side, int maxPing);
     void Cancel();
     void Leave();                       // back to the lobby from a found match
+    // A found match: take it, or turn it down (which also takes this player out of the queue; the opponent keeps
+    // searching). The connection check runs meanwhile, but its answer only goes to the server once accepted.
+    void Accept();
+    void Decline();
+    static constexpr uint64_t kAcceptMs = 10000;   // the server gives a found match 12 s before it calls it off
     void RequestBoard();
-    void Report(bool iWon);             // the match's result (from the game)
+    // The match's result (from the game), with its fights as a JSON array ([{"teams":[[a,b],[c,d]],"winner":0,"draw":false}]).
+    void Report(bool iWon, const std::string& fightsJson = "[]");
     // The game takes over the UDP port the connection check ran on (the NATs have it open to the opponent):
     // the client closes its socket and returns the port (0: none). Blocks for a moment.
     int HandOffUdp();
@@ -84,6 +105,7 @@ private:
     void Handle(const std::string& text);
     void OnUdp(const std::string& from, const std::string& data);
     void RunCheck(uint64_t now);
+    void DeclineNow(bool timedOut);
     void SendJson(const std::string& text);
     std::string LoadToken();
     void SaveToken(const std::string& token);

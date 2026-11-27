@@ -56,6 +56,9 @@ int main(int argc, char** argv)
     a.Queue("ranked", "p1", 150);
     b.Queue("ranked", "any", 150);
     assert(WaitFor(a, Online::CHECKING, 5000, "a"));
+    assert(WaitFor(b, Online::CHECKING, 5000, "b"));
+    a.Accept();                                                      // a found match waits for both players to take it
+    b.Accept();
     assert(WaitFor(a, Online::READY, 8000, "a"));
     assert(WaitFor(b, Online::READY, 8000, "b"));
     auto va = a.Snapshot(), vb = b.Snapshot();
@@ -91,6 +94,7 @@ int main(int argc, char** argv)
         std::puts("the game transport played through the match the server made");
     }
 
+    const std::string matchId = va.match.id;
     a.Report(true);
     b.Report(false);
     // a new name (taken: the opponent's), then a free one
@@ -111,6 +115,7 @@ int main(int argc, char** argv)
     vb = b.Snapshot();
     std::printf("rated: %s %d (%+d), %s %d (%+d)\n", va.name.c_str(), va.rating, va.lastChange, vb.name.c_str(), vb.rating, vb.lastChange);
     assert(va.rating == 1520 && vb.rating == 1480 && va.lastOutcome == "agreed");
+    assert(va.lastMatch == matchId && vb.lastMatch == matchId);      // which match the outcome belongs to
 
     // signing in again uses the saved account
     a.Stop();

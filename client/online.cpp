@@ -10,6 +10,8 @@
 namespace {
 constexpr uint8_t kReflect = 0x01, kReflected = 0x02, kRelay = 0x03, kRelayed = 0x04;
 constexpr uint8_t kPing = 0x20, kPong = 0x21;
+// Info: type, match id (8), my slot, connection (0 unknown, 1 wired, 2 Wi-Fi), region length, region (UTF-8, <= 48 bytes)
+constexpr uint8_t kInfo = 0x22;
 constexpr uint64_t kCheckMs = 3500;    // how long the connection check measures
 constexpr int kSamplesWanted = 8;
 
@@ -43,7 +45,8 @@ struct Online::Impl {
     int handedPort = 0;           // the port the game has now
 
     // the connection check of the current proposal
-    bool checking = false, checkSent = false;
+    bool checking = false, checkSent = false, accepted = false;
+    uint64_t acceptBy = 0;
     uint64_t checkStart = 0, nextProbe = 0;
     uint8_t matchId[8] = {};
     uint8_t mySlot = 0;
@@ -129,6 +132,37 @@ void Online::Cancel()
         if (view_.state == QUEUED) view_.state = LOBBY;
     });
 }
+void Online::Accept()
+{
+    Post([this] {
+        p_->accepted = true;
+        std::lock_guard l(m_);
+        view_.accepted = true;
+    });
+}
+void Online::Decline()
+{
+    Post([this] { DeclineNow(false); });
+}
+// Turning a found match down (or letting its time run out): the server hears "leave" - the opponent goes back to the
+// queue, this player doesn't.
+void Online::DeclineNow(bool timedOut)
+{
+    std::string id;
+    {
+        std::lock_guard l(m_);
+        if (view_.state != CHECKING) return;
+        id = view_.match.id;
+        view_.state = LOBBY;
+        view_.match = {};
+        view_.accepted = false;
+        view_.notice = timedOut ? "You didn't accept the match in time, so you've been taken out of the queue."
+                                : "Match declined. You're out of the queue.";
+    }
+    p_->checking = false;
+    p_->accepted = false;
+    if (!id.empty()) SendJson("{\"t\":\"leave\",\"match\":" + json::Quote(id) + "}");
+}
 void Online::Leave()
 {
     Post([this] {
@@ -143,16 +177,27 @@ void Online::Leave()
         if (!id.empty()) SendJson("{\"t\":\"leave\",\"match\":" + json::Quote(id) + "}");
     });
 }
-void Online::RequestBoard() { Post([this] { SendJson("{\"t\":\"leaderboard\"}"); }); }
-void Online::Report(bool iWon)
+// the server's ranks for this player (welcome, rated): kept only when the server sent all of them
+static void ReadChars(Online::View& v, const json::Value& chars)
 {
-    Post([this, iWon] {
+    if (chars.type != json::Value::ARR || chars.a.size() < 59) return;
+    v.chars.clear();
+    for (const json::Value& c : chars.a)
+        v.chars.push_back({ c["rank"].Int(), c["points"].Int(), c["streak"].Int(), c["bar1"].Int(), c["bar2"].Int() });
+    ++v.charsVersion;
+}
+
+void Online::RequestBoard() { Post([this] { SendJson("{\"t\":\"leaderboard\"}"); }); }
+void Online::Report(bool iWon, const std::string& fightsJson)
+{
+    Post([this, iWon, fightsJson] {
         std::string id;
         {
             std::lock_guard l(m_);
             id = view_.match.id;
         }
-        if (!id.empty()) SendJson("{\"t\":\"result\",\"match\":" + json::Quote(id) + ",\"winner\":\"" + (iWon ? "me" : "opponent") + "\"}");
+        if (!id.empty()) SendJson("{\"t\":\"result\",\"match\":" + json::Quote(id) + ",\"winner\":\"" + (iWon ? "me" : "opponent") + "\",\"fights\":" +
+                                     (fightsJson.empty() ? std::string("[]") : fightsJson) + "}");
     });
 }
 
@@ -291,6 +336,7 @@ void Online::Handle(const std::string& text)
         impl.udpToken = m["udpToken"].Str();
         impl.udpPort = m["udpPort"].Int() ? m["udpPort"].Int() : 27620;
         impl.serverUdp = cfg_.host + ":" + std::to_string(impl.udpPort);
+        ReadChars(v, m["chars"]);
         impl.nextReflect = 0;
         impl.ws->Send("{\"t\":\"leaderboard\"}");
     } else if (t == "renamed") {
@@ -340,6 +386,11 @@ void Online::Handle(const std::string& text)
         impl.checking = HexTo(v.match.id, impl.matchId, 8);
         impl.checkSent = false;
         impl.checkStart = net::NowMs();
+        impl.accepted = false;
+        impl.acceptBy = impl.checkStart + kAcceptMs;
+        v.accepted = false;
+        v.acceptDeadlineMs = impl.acceptBy;
+        v.notice.clear();
         impl.nextProbe = 0;
         impl.mySlot = v.match.side == "p1" ? 0 : 1;
         impl.peerAddr = v.match.peerAddr;
@@ -362,7 +413,7 @@ void Online::Handle(const std::string& text)
         const std::string why = m["reason"].Str();
         v.notice = why == "too_far" ? "That opponent was too far away. Still searching."
                  : why == "check_failed" ? "Could not connect to that opponent. Still searching."
-                 : why == "opponent_left" ? "The opponent left. Still searching."
+                 : why == "opponent_left" ? "Your opponent declined or left. Still searching."
                  : "The match did not start. Still searching.";
         v.match = {};
         v.state = LOBBY;   // a "queued" follows when we are back in the queue
@@ -372,11 +423,16 @@ void Online::Handle(const std::string& text)
     } else if (t == "rated") {
         v.lastChange = m["change"].Int();
         v.lastOutcome = m["outcome"].Str();
+        v.lastMatch = m["match"].Str();
         v.rating = m["rating"].Int();
         v.games = m["games"].Int();
         v.wins = m["wins"].Int();
         v.match = {};
         v.state = LOBBY;
+        ReadChars(v, m["chars"]);
+        v.lastRanks.clear();
+        for (const json::Value& r : m["ranks"].a)
+            v.lastRanks.push_back({ r["c"].Int(), r["before"].Int(), r["after"].Int(), r["pb"].Int(), r["pa"].Int() });
     } else if (t == "leaderboard") {
         v.board.clear();
         for (const json::Value& r : m["rows"].a)
@@ -388,6 +444,7 @@ void Online::Handle(const std::string& text)
 void Online::RunCheck(uint64_t now)
 {
     Impl& impl = *p_;
+    if (!impl.accepted && now >= impl.acceptBy) { DeclineNow(true); return; }
     if (!impl.checkSent && now >= impl.nextProbe && now - impl.checkStart < kCheckMs) {
         uint8_t probe[15] = { kPing };
         std::memcpy(probe + 1, impl.matchId, 8);
@@ -408,12 +465,31 @@ void Online::RunCheck(uint64_t now)
             impl.sent[s] = { now, path };
         }
         impl.nextProbe = now + 100;
+        // this PC's connection and region, with every round of probes (both paths): a few dozen bytes
+        {
+            static const int conn = plat::ConnectionKind();
+            static const std::string region = plat::RegionName().substr(0, 48);
+            std::vector<uint8_t> info(12 + region.size());
+            info[0] = kInfo;
+            std::memcpy(&info[1], impl.matchId, 8);
+            info[9] = impl.mySlot;
+            info[10] = uint8_t(conn);
+            info[11] = uint8_t(region.size());
+            std::memcpy(info.data() + 12, region.data(), region.size());
+            if (!impl.peerAddr.empty() && !testNoDirect) impl.udp->SendTo(impl.peerAddr, info.data(), info.size());
+            std::vector<uint8_t> pkt(17 + info.size());
+            pkt[0] = kRelay;
+            if (HexTo(impl.relayToken, pkt.data() + 1, 16)) {
+                std::memcpy(pkt.data() + 17, info.data(), info.size());
+                impl.udp->SendTo(impl.serverUdp, pkt.data(), pkt.size());
+            }
+        }
         std::lock_guard l(m_);
         view_.checkStage = impl.directRtt.empty() && impl.relayRtt.empty() ? "Connecting to " + view_.match.opponent + "..."
                                                                          : "Measuring the connection...";
     }
     const bool enough = int(impl.directRtt.size()) >= kSamplesWanted;
-    if (!impl.checkSent && (enough || now - impl.checkStart >= kCheckMs)) {
+    if (!impl.checkSent && impl.accepted && (enough || now - impl.checkStart >= kCheckMs)) {
         impl.checkSent = true;
         bool ok = true, direct = true;
         int rtt = 0;
@@ -445,6 +521,13 @@ void Online::OnUdp(const std::string& from, const std::string& data)
     if (fromServer && d[0] == kRelayed) { body = d + 1; --n; path = 1; }
     else if (fromServer) return;
     if (path == 0 && testNoDirect) return;
+    if (n >= 12 && body[0] == kInfo && impl.checking && std::memcmp(body + 1, impl.matchId, 8) == 0 && body[9] != impl.mySlot &&
+        n >= size_t(12 + body[11])) {
+        std::lock_guard l(m_);
+        view_.match.opponentConn = body[10] <= 2 ? body[10] : 0;
+        view_.match.opponentRegion.assign(reinterpret_cast<const char*>(body + 12), body[11]);
+        return;
+    }
     if (n != 15 || (body[0] != kPing && body[0] != kPong) || !impl.checking || std::memcmp(body + 1, impl.matchId, 8) != 0) return;
     if (body[9] == impl.mySlot) return;   // our own packet (a relay echo)
     if (body[0] == kPing) {

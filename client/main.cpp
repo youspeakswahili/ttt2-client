@@ -19,6 +19,9 @@ int main(int argc, char** argv)
     for (int i = 1; i + 2 < argc + 1; ++i)
         if (std::strcmp(argv[i], "--shot") == 0 && i + 2 < argc) { shotPage = std::atoi(argv[i + 1]); shotFile = argv[i + 2]; }
 
+    for (int i = 1; i < argc; ++i)
+        if (std::strcmp(argv[i], "--player2") == 0) plat::UseSecondPlayer();   // before anything reads the data folders
+
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "0");   // presses in the game must not move the client
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d11,direct3d12,opengl,software");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -29,7 +32,7 @@ int main(int argc, char** argv)
     float scale = shotFile ? 1.f : SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
     if (scale <= 0) scale = 1;
     const int w = int(1280 * scale), h = int(800 * scale);
-    SDL_Window* window = SDL_CreateWindow("TTT2 Client", w, h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
+    SDL_Window* window = SDL_CreateWindow(plat::SecondPlayer() ? "TTT2 Client - PLAYER 2 (solo test)" : "TTT2 Client", w, h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
     if (!window) return 1;
     SDL_SetWindowMinimumSize(window, int(1100 * scale), int(680 * scale));
     SDL_Renderer* renderer = SDL_CreateRenderer(window, nullptr);
@@ -42,6 +45,7 @@ int main(int argc, char** argv)
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
+    ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_AutoAll);   // any connected pad can accept a match
     ImGui_ImplSDLRenderer3_Init(renderer);
 
     // TTT2_FAKE_PAD=1 (UI checks): a virtual fight stick with 1 and the lever's down-forward held

@@ -21,6 +21,6 @@ $T-clang++ -O2 -std=c++20 -DNDEBUG -mwindows -static \
   "$I/imgui.cpp" "$I/imgui_draw.cpp" "$I/imgui_tables.cpp" "$I/imgui_widgets.cpp" \
   "$I/backends/imgui_impl_sdl3.cpp" "$I/backends/imgui_impl_sdlrenderer3.cpp" "$W/obj/client_res.o" \
   -o "$OUT/TTT2 Client.exe" -L"$W/sdl-install/lib" -lSDL3 \
-  -lwinhttp -lcrypt32 -lws2_32 -ldwmapi -lversion -lsetupapi -lwinmm -limm32 -lole32 -loleaut32 -luuid -lcfgmgr32 -lgdi32 -luser32 \
+  -lwinhttp -lcrypt32 -lws2_32 -liphlpapi -ldwmapi -lversion -lsetupapi -lwinmm -limm32 -lole32 -loleaut32 -luuid -lcfgmgr32 -lgdi32 -luser32 \
   -ladvapi32 -lshell32 -lhid -Wl,--strip-all
 echo "built: $OUT"

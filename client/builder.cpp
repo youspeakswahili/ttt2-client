@@ -98,6 +98,18 @@ void Builder::CheckLatest()
     });
 }
 
+std::string Builder::EngineDir()
+{
+    const std::string sub = plat::JoinPath(plat::ExeDir(), kEngineDir);
+    if (plat::FileExists(plat::JoinPath(sub, plat::kGameExe))) return sub;
+    return plat::ExeDir();
+}
+bool Builder::Extracted(const std::string& dir)
+{
+    return !dir.empty() && plat::FileExists(plat::JoinPath(dir, "game\\default.xex")) &&
+           plat::FileExists(plat::JoinPath(dir, "game\\default.xexp"));
+}
+
 void Builder::Run(BuildRequest r)
 {
     auto fail = [&](const std::string& why) {
@@ -106,54 +118,67 @@ void Builder::Run(BuildRequest r)
         running_ = false;
         finished_ = true;
     };
-    const std::string layer = plat::JoinPath(plat::ExeDir(), "xinput9_1_0.dll");
+    // The game build ships inside the client folder ("game build"): ttt2.exe, its libraries and rexglue.exe.
+    const std::string engine = EngineDir();
+    const std::string rexglue = plat::JoinPath(engine, "rexglue.exe");
+    if (!plat::FileExists(plat::JoinPath(engine, plat::kGameExe)) || !plat::FileExists(rexglue))
+        return fail(std::string("the \"") + kEngineDir + "\" folder is missing next to the client. Extract the whole client zip.");
+    if (r.dest.empty()) return fail("choose an install folder.");
+    plat::MakeDir(r.dest);
+    if (!plat::DirExists(r.dest)) return fail("could not make the folder " + r.dest + ". Pick one you can write to (not Program Files).");
+    const std::string logFile = plat::JoinPath(r.dest, "setup log.txt");
+    std::string err;
 
-    if (!r.onlyLayer) {
+    if (!r.onlyLayer && Extracted(r.dest)) {
+        Line("The game's files are already in " + r.dest + "; keeping them.");
+    } else if (!r.onlyLayer) {
         if (!plat::FileExists(r.iso)) return fail("the disc image was not found: " + r.iso);
         if (!plat::FileExists(r.tu) && !plat::DirExists(r.tu)) return fail("the title update was not found: " + r.tu);
-        if (r.dest.empty()) return fail("choose an install folder.");
         const uint64_t free = plat::FreeBytes(r.dest);
-        if (free && free < (14ull << 30)) return fail("the drive has " + Gb(free) + " free; the game needs about 13 GB.");
+        if (free && free < (9ull << 30)) return fail("the drive has " + Gb(free) + " free; the game needs about 8 GB.");
 
-        Say("Finding the latest version of the port", 0.02f);
-        std::string body, err, tag, url;
-        if (!plat::HttpGet(std::string("https://api.github.com/repos/") + kRepo + "/releases/latest", body, err))
-            return fail("could not reach GitHub (" + err + ").");
-        if (!ParseRelease(body, tag, url)) return fail("the latest release has no installer.");
-        Line("Release " + tag + ": " + url);
+        // 1. the disc's files (the image itself is never changed)
+        const std::string game = plat::JoinPath(r.dest, "game");
+        Say("Copying the game's files out of your disc image (a few minutes)", 0.03f);
+        const uint64_t expect = 7600ull << 20;   // about what the disc holds
+        int rc = plat::RunHiddenAndWait(rexglue, "--log-file \"" + logFile + "\" vfs dump \"" + r.iso + "\" \"" + game + "\"",
+                                        r.dest, err, [&] {
+            const double done = double(plat::FolderBytes(game)) / double(expect);
+            progress_ = 0.03f + 0.80f * float(done > 1 ? 1 : done);
+        });
+        if (rc == -1) return fail("could not start rexglue.exe (" + err + ").");
+        if (rc != 0) return fail("reading the disc image failed (code " + std::to_string(rc) + "). See \"setup log.txt\" in " + r.dest + ".");
+        if (!plat::FileExists(plat::JoinPath(game, "default.xex"))) return fail("that disc image has no default.xex. Is it TTT2 for Xbox 360?");
 
-        const std::string setup = plat::JoinPath(plat::TempDir(), "ttt2_setup.exe");
-        Say("Downloading the port " + tag, 0.04f);
-        if (!plat::HttpDownload(url, setup, err, [this](uint64_t done, uint64_t total) {
-                if (total) progress_ = 0.04f + 0.08f * float(double(done) / double(total));
-            }))
-            return fail("the download failed (" + err + ").");
-
-        Say("Building the game from your disc image. Windows will ask for permission.", 0.12f);
-        Line("This usually takes a few minutes.");
-        {
-            std::lock_guard l(m_);
-            setupLog_ = setup + ".log";
-            setupLogSeen_ = 0;
-        }
-        installing_ = true;
-        std::string args = "/silent \"" + r.iso + "\" \"" + r.tu + "\" \"" + r.dest + "\"";
-        if (!r.dlc.empty()) args += " \"" + r.dlc + "\"";
-        const int rc = plat::RunElevatedAndWait(setup, args, err);
-        installing_ = false;
-        Poll();   // the installer's last lines
-        if (rc == -1) return fail(err.empty() ? "the installer could not start." : err);
-        if (rc != 0) return fail("the port's installer reported a problem (see the lines above).");
-        if (!plat::LooksLikeInstall(r.dest)) return fail("the installer finished but the game is not in " + r.dest + ".");
-        std::lock_guard l(m_);
-        tag_ = tag;
+        // 2. Title Update 3: its patch goes next to default.xex, the rest into update
+        const std::string update = plat::JoinPath(r.dest, "update");
+        Say("Reading Title Update 3", 0.84f);
+        rc = plat::RunHiddenAndWait(rexglue, "--log-file \"" + logFile + "\" vfs dump \"" + r.tu + "\" \"" + update + "\"", r.dest, err, {});
+        if (rc != 0) return fail("reading the title update failed (code " + std::to_string(rc) + "). See \"setup log.txt\".");
+        std::string patch;
+        for (const auto& f : plat::ListFilesRecursive(update))
+            if (EndsWith(f, ".xexp") || EndsWith(f, ".XEXP") || EndsWith(f, ".Xexp")) { patch = f; break; }
+        if (patch.empty()) return fail("that title update has no .xexp patch in it. Use TU3 (TU_174Q22P_...).");
+        if (!plat::CopyFileTo(patch, plat::JoinPath(game, "default.xexp"), err)) return fail("could not copy the patch (" + err + ").");
     }
 
-    Say("Adding the controller layer", 0.96f);
-    if (!plat::FileExists(layer)) return fail("xinput9_1_0.dll is missing next to the client. Extract the whole client zip.");
-    std::string err;
-    if (!plat::CopyFileElevated(layer, plat::JoinPath(r.dest, "xinput9_1_0.dll"), err)) return fail("could not add the controller layer (" + err + ").");
-    Say(r.onlyLayer ? "Controller layer installed." : "Done. The game is ready.", 1.0f);
+    // 3. the game build itself (also how an updated client refreshes an installed game)
+    Say("Adding the game build", 0.92f);
+    const bool same = plat::JoinPath(engine, "x") == plat::JoinPath(r.dest, "x");   // the client lives in the game folder
+    const auto files = same ? std::vector<std::string>{} : plat::ListFilesRecursive(engine);
+    for (const auto& f : files) {
+        const std::string rel = f.substr(engine.size() + 1);
+        const std::string to = plat::JoinPath(r.dest, rel);
+        const size_t slash = to.find_last_of("\\/");
+        if (slash != std::string::npos) plat::MakeDir(to.substr(0, slash));
+        if (!plat::CopyFileTo(f, to, err)) return fail("could not copy " + rel + " (" + err + "). Is the game still running?");
+    }
+    if (!plat::LooksLikeInstall(r.dest)) return fail("the game is not complete in " + r.dest + ".");
+    {
+        std::lock_guard l(m_);
+        tag_ = kBuildTag;
+    }
+    Say(r.onlyLayer ? "Game build updated." : "Done. The game is ready.", 1.0f);
     ok_ = true;
     running_ = false;
     finished_ = true;

@@ -27,6 +27,8 @@ int main() {
     InputConfig bad; ParseConfig("[general]\ndeadzone=500\n[device x]\nA = zz, b3 ,h1q, a2*\n", bad);
     assert(bad.deadzone == 90 && bad.devices[0].out[O_A].size() == 1);
     assert(OutBit(O_M134) == (OutBit(O_X) | OutBit(O_A) | OutBit(O_B)) && std::string(OutKey(O_M134)) == "M134");
+    assert(OutBit(O_M23) == (OutBit(O_Y) | OutBit(O_A)) && std::string(OutKey(O_M23)) == "M23");
+    assert(OutBit(O_M14) == (OutBit(O_X) | OutBit(O_B)) && std::string(OutKey(O_M14)) == "M14");
     InputConfig mc; mc.Get("g").out[O_M134] = { {S_BUTTON,9,0} };
     InputConfig mr; ParseConfig(WriteConfig(mc), mr);
     assert(mr.Find("g") && mr.Find("g")->out[O_M134].size() == 1);

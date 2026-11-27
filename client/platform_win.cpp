@@ -1,13 +1,20 @@
 // TTT2 Client - Windows implementation of platform.h.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
+#include <iphlpapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <tlhelp32.h>
 #include <winhttp.h>
 #include <dwmapi.h>
+#include <mmdeviceapi.h>
+#include <mmsystem.h>
+#include <propsys.h>
 #include <SDL3/SDL.h>
+#include <filesystem>
 #include "platform.h"
 #include "../common/input_config.h"
 
@@ -57,7 +64,7 @@ std::string JoinPath(const std::string& a, const std::string& b)
 std::string ClientDataDir() { const std::string d = JoinPath(Env(L"LOCALAPPDATA"), "TTT2Client"); MakeDirs(d); return d; }
 std::string GameDataDir() { return JoinPath(Env(L"LOCALAPPDATA"), "TTT2Recomp"); }
 std::string TempDir() { const std::string d = JoinPath(Env(L"TEMP"), "TTT2Client"); MakeDirs(d); return d; }
-std::string DefaultInstallDir() { return "C:\\Games\\Tekken Tag Tournament 2"; }
+std::string DefaultInstallDir() { return "C:\\Games\\TTT2"; }
 std::string ExeDir()
 {
     wchar_t p[MAX_PATH];
@@ -171,6 +178,43 @@ std::vector<std::string> ListFilesRecursive(const std::string& dir)
     }
     return out;
 }
+static bool g_second = false;
+bool SecondPlayer() { return g_second; }
+void UseSecondPlayer()
+{
+    namespace fs = std::filesystem;
+    const std::wstring real = W(Env(L"LOCALAPPDATA"));
+    if (real.empty() || g_second) return;
+    const fs::path twin = fs::path(real) / L"TTT2 Player 2";
+    std::error_code ec;
+    if (!fs::exists(twin / L"TTT2Client", ec)) {
+        // the first player's settings, binds, install choice and game saves; not the account (the server knows one
+        // player by it), not a match in progress, not logs
+        auto copyTree = [&](const wchar_t* name, std::initializer_list<const wchar_t*> skip) {
+            const fs::path from = fs::path(real) / name, to = twin / name;
+            fs::create_directories(to, ec);
+            if (!fs::exists(from, ec)) return;
+            for (fs::recursive_directory_iterator it(from, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+                const fs::path rel = it->path().lexically_relative(from);
+                const std::wstring top = rel.begin()->wstring(), file = it->path().filename().wstring();
+                bool skipped = false;
+                for (const wchar_t* s : skip) skipped = skipped || top == s || file == s;
+                if (skipped) { if (it->is_directory(ec)) it.disable_recursion_pending(); continue; }
+                std::error_code e2;
+                if (it->is_directory(e2)) fs::create_directories(to / rel, e2);
+                else fs::copy_file(it->path(), to / rel, fs::copy_options::overwrite_existing, e2);
+            }
+            ec.clear();
+        };
+        copyTree(L"TTT2Recomp", { L"log.txt", L"log-previous.txt", L"log_start.txt", L"flip-log.txt", L"net" });
+        copyTree(L"TTT2Client", { L"account.dat", L"match.ini", L"match_prompt.ini", L"match_prompt.ini.answer", L"voice_live.ini" });
+        // in a window, so the two games sit next to each other
+        WritePrivateProfileStringW(L"Display", L"Mode", L"0", (twin / L"TTT2Recomp" / L"settings.ini").c_str());
+    }
+    SetEnvironmentVariableW(L"LOCALAPPDATA", twin.c_str());
+    _wputenv_s(L"LOCALAPPDATA", twin.c_str());
+    g_second = true;
+}
 bool Relaunch(const std::string& args)
 {
     wchar_t exe[MAX_PATH];
@@ -187,23 +231,10 @@ bool Relaunch(const std::string& args)
 
 bool LooksLikeInstall(const std::string& dir)
 {
-    return !dir.empty() && FileExists(JoinPath(dir, kGameExe)) && FileExists(JoinPath(dir, "game\\tekken.img"));
+    return !dir.empty() && FileExists(JoinPath(dir, kGameExe)) && FileExists(JoinPath(dir, "game\\default.xex")) &&
+           FileExists(JoinPath(dir, "game\\default.xexp"));
 }
-std::string RegisteredInstall()
-{
-    HKEY k = nullptr;
-    std::string out;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\TTT2Recomp", 0,
-                      KEY_READ | KEY_WOW64_64KEY, &k) == ERROR_SUCCESS) {
-        wchar_t v[MAX_PATH] = {};
-        DWORD n = sizeof v - sizeof(wchar_t), type = 0;
-        if (RegQueryValueExW(k, L"InstallLocation", nullptr, &type, reinterpret_cast<BYTE*>(v), &n) == ERROR_SUCCESS && type == REG_SZ)
-            out = U(v);
-        RegCloseKey(k);
-    }
-    while (!out.empty() && (out.back() == '\\' || out.back() == '/')) out.pop_back();
-    return out;
-}
+std::string RegisteredInstall() { return {}; }
 std::string FileVersion(const std::string& exe)
 {
     const std::wstring w = W(exe);
@@ -279,6 +310,46 @@ bool ProcessDone(uintptr_t handle)
     CloseHandle(h);
     return true;
 }
+int ConnectionKind()
+{
+    // the interface Windows would use to reach the internet, then its type
+    DWORD index = 0;
+    IPAddr dest = 0x08080808;   // 8.8.8.8 (no packet is sent)
+    if (GetBestInterface(dest, &index) != NO_ERROR) return 0;
+    ULONG size = 16 * 1024;
+    std::vector<uint8_t> buf(size);
+    auto* a = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data());
+    ULONG r = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER, nullptr, a, &size);
+    if (r == ERROR_BUFFER_OVERFLOW) {
+        buf.resize(size);
+        a = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data());
+        r = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER, nullptr, a, &size);
+    }
+    if (r != NO_ERROR) return 0;
+    for (; a; a = a->Next)
+        if (a->IfIndex == index) return a->IfType == IF_TYPE_IEEE80211 ? 2 : a->IfType == IF_TYPE_ETHERNET_CSMACD ? 1 : 0;
+    return 0;
+}
+
+std::string RegionName()
+{
+    const GEOID geo = GetUserGeoID(GEOCLASS_NATION);
+    if (geo == GEOID_NOT_AVAILABLE) return "";
+    wchar_t name[128] = {};
+    if (!GetGeoInfoW(geo, GEO_FRIENDLYNAME, name, 128, 0)) return "";
+    char utf8[256] = {};
+    WideCharToMultiByte(CP_UTF8, 0, name, -1, utf8, sizeof utf8, nullptr, nullptr);
+    return utf8;
+}
+
+void KillProcess(uintptr_t handle)
+{
+    if (!handle) return;
+    HANDLE h = reinterpret_cast<HANDLE>(handle);
+    TerminateProcess(h, 0);
+    WaitForSingleObject(h, 3000);
+    CloseHandle(h);
+}
 void OpenFolder(const std::string& dir) { ShellExecuteW(nullptr, L"open", W(dir).c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
 void OpenUrl(const std::string& url) { ShellExecuteW(nullptr, L"open", W(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
 
@@ -301,6 +372,47 @@ int RunElevatedAndWait(const std::string& exe, const std::string& args, std::str
     GetExitCodeProcess(sei.hProcess, &code);
     CloseHandle(sei.hProcess);
     return int(code);
+}
+int RunHiddenAndWait(const std::string& exe, const std::string& args, const std::string& dir, std::string& error,
+                     const std::function<void()>& tick)
+{
+    std::wstring cmd = L"\"" + W(exe) + L"\" " + W(args);
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(W(exe).c_str(), cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+                        dir.empty() ? nullptr : W(dir).c_str(), &si, &pi)) {
+        error = LastError();
+        return -1;
+    }
+    CloseHandle(pi.hThread);
+    while (WaitForSingleObject(pi.hProcess, 500) == WAIT_TIMEOUT)
+        if (tick) tick();
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    return int(code);
+}
+uint64_t FolderBytes(const std::string& dir)
+{
+    uint64_t total = 0;
+    std::vector<std::wstring> todo{ W(dir) };
+    while (!todo.empty()) {
+        const std::wstring d = todo.back();
+        todo.pop_back();
+        WIN32_FIND_DATAW f;
+        HANDLE h = FindFirstFileW((d + L"\\*").c_str(), &f);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (!wcscmp(f.cFileName, L".") || !wcscmp(f.cFileName, L"..")) continue;
+            if (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) todo.push_back(d + L"\\" + f.cFileName);
+            else total += (uint64_t(f.nFileSizeHigh) << 32) | f.nFileSizeLow;
+        } while (FindNextFileW(h, &f));
+        FindClose(h);
+    }
+    return total;
 }
 bool CopyFileElevated(const std::string& from, const std::string& to, std::string& error)
 {
@@ -422,6 +534,123 @@ void StyleWindow(SDL_Window* w)
     DwmSetWindowAttribute(hwnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &dark, sizeof dark);
     const COLORREF caption = RGB(10, 10, 13);
     DwmSetWindowAttribute(hwnd, 35 /*DWMWA_CAPTION_COLOR*/, &caption, sizeof caption);
+}
+
+
+void PlayAlert() { PlaySoundW(L"SystemNotification", nullptr, SND_ALIAS | SND_ASYNC | SND_NODEFAULT); }
+
+bool KeyHeld(int vk) { return vk > 0 && vk < 256 && (GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+std::string KeyName(int vk)
+{
+    UINT sc = MapVirtualKeyW(UINT(vk), MAPVK_VK_TO_VSC_EX);
+    if (!sc) return "";
+    LONG lp = LONG((sc & 0xFF) << 16);
+    if ((sc & 0xFF00) == 0xE000) lp |= 1 << 24;   // extended key
+    wchar_t name[64] = {};
+    return GetKeyNameTextW(lp, name, 64) > 0 ? U(name) : std::string();
+}
+
+namespace {
+// PKEY_Device_FriendlyName
+const PROPERTYKEY kFriendlyName = { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
+
+struct ComScope {
+    bool mine;
+    ComScope() { const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); mine = SUCCEEDED(hr); }
+    ~ComScope() { if (mine) CoUninitialize(); }
+};
+IMMDeviceEnumerator* Enumerator()
+{
+    IMMDeviceEnumerator* en = nullptr;
+    CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&en));
+    return en;
+}
+std::string DeviceId(IMMDevice* d)
+{
+    LPWSTR id = nullptr;
+    std::string r;
+    if (SUCCEEDED(d->GetId(&id)) && id) { r = U(id); CoTaskMemFree(id); }
+    return r;
+}
+} // namespace
+
+std::vector<Monitor> Monitors()
+{
+    std::vector<Monitor> out;
+    EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR m, HDC, LPRECT, LPARAM p) -> BOOL {
+        auto& list = *reinterpret_cast<std::vector<Monitor>*>(p);
+        MONITORINFOEXW mi{};
+        mi.cbSize = sizeof(mi);
+        if (!GetMonitorInfoW(m, &mi)) return TRUE;
+        Monitor mon;
+        mon.id = U(mi.szDevice);
+        mon.primary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
+        // the monitor's own name (EnumDisplayDevices on the adapter's device: "DELL U2719D"), else "Display 2"
+        std::string model;
+        DISPLAY_DEVICEW dd{};
+        dd.cb = sizeof(dd);
+        if (EnumDisplayDevicesW(mi.szDevice, 0, &dd, 0) && dd.DeviceString[0]) model = U(dd.DeviceString);
+        std::string number = mon.id;
+        const size_t at = number.find("DISPLAY");
+        number = at == std::string::npos ? number : "Display " + number.substr(at + 7);
+        char size[48];
+        std::snprintf(size, sizeof size, " - %ld x %ld", long(mi.rcMonitor.right - mi.rcMonitor.left), long(mi.rcMonitor.bottom - mi.rcMonitor.top));
+        mon.name = number + size;
+        if (!model.empty() && model != "Generic PnP Monitor") mon.name += " (" + model + ")";
+        if (mon.primary) mon.name += ", main";
+        list.push_back(mon);
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&out));
+    return out;
+}
+
+std::vector<AudioDevice> AudioDevices(bool microphones)
+{
+    std::vector<AudioDevice> out;
+    ComScope com;
+    IMMDeviceEnumerator* en = Enumerator();
+    if (!en) return out;
+    IMMDeviceCollection* list = nullptr;
+    if (SUCCEEDED(en->EnumAudioEndpoints(microphones ? eCapture : eRender, DEVICE_STATE_ACTIVE, &list))) {
+        UINT n = 0;
+        list->GetCount(&n);
+        for (UINT i = 0; i < n; ++i) {
+            IMMDevice* d = nullptr;
+            if (FAILED(list->Item(i, &d))) continue;
+            AudioDevice a{ DeviceId(d), "" };
+            IPropertyStore* props = nullptr;
+            if (SUCCEEDED(d->OpenPropertyStore(STGM_READ, &props))) {
+                PROPVARIANT v;
+                PropVariantInit(&v);
+                if (SUCCEEDED(props->GetValue(kFriendlyName, &v)) && v.vt == VT_LPWSTR && v.pwszVal) a.name = U(v.pwszVal);
+                PropVariantClear(&v);
+                props->Release();
+            }
+            if (a.name.empty()) a.name = "Sound device";
+            if (!a.id.empty()) out.push_back(a);
+            d->Release();
+        }
+        list->Release();
+    }
+    en->Release();
+    return out;
+}
+
+std::string DefaultAudioDevice(bool microphone)
+{
+    ComScope com;
+    IMMDeviceEnumerator* en = Enumerator();
+    if (!en) return "";
+    IMMDevice* d = nullptr;
+    std::string id;
+    if (SUCCEEDED(en->GetDefaultAudioEndpoint(microphone ? eCapture : eRender, microphone ? eCommunications : eConsole, &d)) ||
+        (microphone && SUCCEEDED(en->GetDefaultAudioEndpoint(eCapture, eConsole, &d)))) {
+        id = DeviceId(d);
+        d->Release();
+    }
+    en->Release();
+    return id;
 }
 
 } // namespace plat

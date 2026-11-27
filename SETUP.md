@@ -97,6 +97,4 @@ Steam shows you as playing "Spacewar". That's expected. Find opponents in `#look
 Saves and the game's settings are in `%LOCALAPPDATA%\TTT2Recomp`. If the game misbehaves, post in
 `#bug-reports` on the Discord with `%LOCALAPPDATA%\TTT2Recomp\log.txt` attached.
 
-Tekken Tag Tournament 2 PC port by shihabal3amri
-([github.com/shihabal3amri/tekken-tag-tournament-2-pc](https://github.com/shihabal3amri/tekken-tag-tournament-2-pc)).
-This client isn't affiliated with the port's author or with Bandai Namco.
+This client isn't affiliated with Bandai Namco or Microsoft. You must own the game.
