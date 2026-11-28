@@ -16,7 +16,7 @@ done
 $T-clang++ -O2 -std=c++20 -DNDEBUG -mwindows -static \
   -I"$I" -I"$I/backends" -I"$W/sdl-install/include" \
   -I"$HERE/third_party/monocypher" -I"$HERE/third_party/miniz" \
-  "$HERE/client/main.cpp" "$HERE/client/app.cpp" "$HERE/client/builder.cpp" "$HERE/client/xdvdfs.cpp" "$HERE/client/updater.cpp" "$HERE/client/online.cpp" "$HERE/client/net_win.cpp" "$HERE/client/platform_win.cpp" \
+  "$HERE/client/main.cpp" "$HERE/client/app.cpp" "$HERE/client/ui.cpp" "$HERE/client/pads.cpp" "$HERE/client/controls.cpp" "$HERE/client/game.cpp" "$HERE/client/page_home.cpp" "$HERE/client/page_online.cpp" "$HERE/client/page_practice.cpp" "$HERE/client/page_settings.cpp" "$HERE/client/page_setup.cpp" "$HERE/client/builder.cpp" "$HERE/client/xdvdfs.cpp" "$HERE/client/updater.cpp" "$HERE/client/online.cpp" "$HERE/client/net_win.cpp" "$HERE/client/platform_win.cpp" \
   "$W/obj/monocypher.o" "$W/obj/monocypher-ed25519.o" "$W/obj/miniz.o" "$W/obj/miniz_tdef.o" "$W/obj/miniz_tinfl.o" "$W/obj/miniz_zip.o" \
   "$I/imgui.cpp" "$I/imgui_draw.cpp" "$I/imgui_tables.cpp" "$I/imgui_widgets.cpp" \
   "$I/backends/imgui_impl_sdl3.cpp" "$I/backends/imgui_impl_sdlrenderer3.cpp" "$W/obj/client_res.o" \

@@ -206,10 +206,12 @@ void UseSecondPlayer()
             }
             ec.clear();
         };
-        copyTree(L"TTT2Recomp", { L"log.txt", L"log-previous.txt", L"log_start.txt", L"flip-log.txt", L"net" });
-        copyTree(L"TTT2Client", { L"account.dat", L"match.ini", L"match_prompt.ini", L"match_prompt.ini.answer", L"voice_live.ini" });
-        // in a window, so the two games sit next to each other
-        WritePrivateProfileStringW(L"Display", L"Mode", L"0", (twin / L"TTT2Recomp" / L"settings.ini").c_str());
+        // the first player's settings, binds, install choice and picks; not the account (the server knows one player by
+        // it), not a match in progress, not logs or replays
+        copyTree(L"TTT2Client", { L"account.dat", L"match.ini", L"match_prompt.ini", L"match_prompt.ini.answer", L"live.ini", L"logs",
+                                  L"replays", L"match_results.txt" });
+        // its game in a window, so the two games sit next to each other
+        WritePrivateProfileStringW(L"Graphics", L"Mode", L"0", (twin / L"TTT2Client" / L"game.ini").c_str());
     }
     SetEnvironmentVariableW(L"LOCALAPPDATA", twin.c_str());
     _wputenv_s(L"LOCALAPPDATA", twin.c_str());
